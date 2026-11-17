@@ -1,5 +1,5 @@
 // ============================================================
-// QUERY ROUTES
+// QUERY ROUTES (WORKSPACE-SCOPED ASYNC FIRESTORE)
 // ============================================================
 
 import { Router } from 'express';
@@ -10,20 +10,26 @@ import {
   taskRepo,
   taskMemberRepo,
   userRepo,
-} from '../repositories/inMemoryStore.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+} from '../repositories/firestoreRepository.js';
+import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { createAuditEvent, createNotification, notifTemplates } from '../services/notificationService.js';
+import type { Query } from '../types/index.js';
 
-function enrichQuery(queryId: string) {
-  const query = queryRepo.findById(queryId);
-  if (!query) return null;
-  const task = taskRepo.findById(query.taskId);
-  const creator = userRepo.findById(query.createdBy);
-  const messages = queryMessageRepo.findByQuery(queryId).map((m) => {
-    const sender = userRepo.findById(m.senderUserId);
-    return { ...m, senderName: sender?.fullName ?? 'Unknown', senderRole: sender?.role };
-  });
+async function enrichQuery(query: Query) {
+  const [task, creator, rawMessages] = await Promise.all([
+    taskRepo.findByIdInWorkspace(query.taskId, query.workspaceId),
+    userRepo.findByIdInWorkspace(query.createdBy, query.workspaceId),
+    queryMessageRepo.findByQueryInWorkspace(query.id, query.workspaceId),
+  ]);
+
+  const messages = await Promise.all(
+    rawMessages.map(async (m) => {
+      const sender = await userRepo.findByIdInWorkspace(m.senderUserId, query.workspaceId);
+      return { ...m, senderName: sender?.fullName ?? 'Unknown', senderRole: sender?.role };
+    })
+  );
+
   return {
     ...query,
     task: task ? { id: task.id, title: task.title, referenceNumber: task.referenceNumber } : null,
@@ -32,7 +38,6 @@ function enrichQuery(queryId: string) {
   };
 }
 
-// Router for /api/queries
 const router = Router();
 
 // GET /api/queries
@@ -40,12 +45,14 @@ router.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
     const { status, category, search } = req.query;
-    const isAdmin = req.session.role === 'admin';
+    const isAdmin = user.role === 'admin';
 
     let queries = isAdmin
-      ? queryRepo.findAll()
-      : queryRepo.findByUser(req.session.userId!);
+      ? await queryRepo.findAllInWorkspace(workspaceId)
+      : await queryRepo.findByUserInWorkspace(user.id, workspaceId);
 
     if (status && typeof status === 'string') {
       queries = queries.filter((q) => q.status === status);
@@ -62,10 +69,8 @@ router.get(
       );
     }
 
-    const enriched = queries
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((q) => enrichQuery(q.id))
-      .filter(Boolean);
+    queries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const enriched = await Promise.all(queries.map((q) => enrichQuery(q)));
 
     res.json({ success: true, data: enriched });
   })
@@ -76,31 +81,36 @@ router.get(
   '/:id',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const query = queryRepo.findById(req.params.id);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const query = await queryRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!query) {
       res.status(404).json({ success: false, error: 'Query not found' });
       return;
     }
 
-    if (req.session.role !== 'admin' && query.createdBy !== req.session.userId) {
-      // Check if they're a task member
-      const member = taskMemberRepo.findByTaskAndUser(query.taskId, req.session.userId!);
+    if (user.role !== 'admin' && query.createdBy !== user.id) {
+      const member = await taskMemberRepo.findByTaskAndUser(query.taskId, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    res.json({ success: true, data: enrichQuery(query.id) });
+    res.json({ success: true, data: await enrichQuery(query) });
   })
 );
 
-// POST /api/queries/:id/messages - Add a message
+// POST /api/queries/:id/messages
 router.post(
   '/:id/messages',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const query = queryRepo.findById(req.params.id);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const query = await queryRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!query) {
       res.status(404).json({ success: false, error: 'Query not found' });
       return;
@@ -111,8 +121,7 @@ router.post(
       return;
     }
 
-    // Authorization
-    if (req.session.role !== 'admin' && query.createdBy !== req.session.userId) {
+    if (user.role !== 'admin' && query.createdBy !== user.id) {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
@@ -125,19 +134,19 @@ router.post(
     }
 
     const qm = await queryMessageRepo.create({
+      workspaceId,
       queryId: query.id,
-      senderUserId: req.session.userId!,
+      senderUserId: user.id,
       message: parse.data.message,
       createdAt: new Date().toISOString(),
     });
 
-    const task = taskRepo.findById(query.taskId);
-    const sender = userRepo.findById(req.session.userId!);
+    const task = await taskRepo.findByIdInWorkspace(query.taskId, workspaceId);
 
-    // If admin replies, notify the query creator
-    if (req.session.role === 'admin' && query.createdBy !== req.session.userId) {
+    if (user.role === 'admin' && query.createdBy !== user.id) {
       const tmpl = notifTemplates.queryAnswered(task?.title ?? 'Unknown Task');
       await createNotification({
+        workspaceId,
         recipientUserId: query.createdBy,
         eventType: 'QUERY_ANSWERED',
         title: tmpl.title,
@@ -152,23 +161,27 @@ router.post(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: user.id,
       entityType: 'query',
       entityId: query.id,
       eventType: 'QUERY_ANSWERED',
-      message: `${sender?.fullName ?? 'Unknown'} added a message to the query`,
+      message: `${user.fullName} added a message to the query`,
     });
 
     res.status(201).json({ success: true, data: qm });
   })
 );
 
-// PATCH /api/queries/:id/status - Change query status
+// PATCH /api/queries/:id/status
 router.patch(
   '/:id/status',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const query = queryRepo.findById(req.params.id);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const query = await queryRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!query) {
       res.status(404).json({ success: false, error: 'Query not found' });
       return;
@@ -185,12 +198,11 @@ router.patch(
 
     const newStatus = parse.data.status;
 
-    // Only admin can resolve; employee can reopen
-    if (newStatus === 'resolved' && req.session.role !== 'admin') {
+    if (newStatus === 'resolved' && user.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Only admin can resolve queries' });
       return;
     }
-    if (newStatus === 'reopened' && query.createdBy !== req.session.userId && req.session.role !== 'admin') {
+    if (newStatus === 'reopened' && query.createdBy !== user.id && user.role !== 'admin') {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
@@ -198,9 +210,10 @@ router.patch(
     const updated = await queryRepo.update(query.id, { status: newStatus });
 
     if (newStatus === 'resolved') {
-      const task = taskRepo.findById(query.taskId);
+      const task = await taskRepo.findByIdInWorkspace(query.taskId, workspaceId);
       const tmpl = notifTemplates.queryResolved(task?.title ?? 'Unknown Task');
       await createNotification({
+        workspaceId,
         recipientUserId: query.createdBy,
         eventType: 'QUERY_RESOLVED',
         title: tmpl.title,
@@ -210,21 +223,21 @@ router.patch(
       });
 
       await createAuditEvent({
-        actorUserId: req.session.userId!,
+        workspaceId,
+        actorUserId: user.id,
         entityType: 'query',
         entityId: query.id,
         eventType: 'QUERY_RESOLVED',
         previousState: query.status,
         newState: 'resolved',
-        message: `Query resolved`,
+        message: 'Query resolved',
       });
     }
 
-    res.json({ success: true, data: enrichQuery(query.id) });
+    res.json({ success: true, data: await enrichQuery(updated || query) });
   })
 );
 
-// Router for task-nested queries mounted at /api/tasks
 export const taskQueryRouter = Router();
 
 // GET /api/tasks/:taskId/queries
@@ -232,32 +245,38 @@ taskQueryRouter.get(
   '/:taskId/queries',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.taskId);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.taskId, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    const queries = queryRepo.findByTask(task.id);
-    const enriched = queries.map((q) => enrichQuery(q.id)).filter(Boolean);
+    const queries = await queryRepo.findByTaskInWorkspace(task.id, workspaceId);
+    const enriched = await Promise.all(queries.map((q) => enrichQuery(q)));
     res.json({ success: true, data: enriched });
   })
 );
 
-// POST /api/tasks/:taskId/queries - Employee creates a query
+// POST /api/tasks/:taskId/queries
 taskQueryRouter.post(
   '/:taskId/queries',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.taskId);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.taskId, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
@@ -268,9 +287,8 @@ taskQueryRouter.post(
       return;
     }
 
-    // Verify user is a task member or admin
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
@@ -299,8 +317,9 @@ taskQueryRouter.post(
     }
 
     const query = await queryRepo.create({
+      workspaceId,
       taskId: task.id,
-      createdBy: req.session.userId!,
+      createdBy: user.id,
       title: parse.data.title,
       description: parse.data.description,
       category: parse.data.category,
@@ -308,36 +327,37 @@ taskQueryRouter.post(
       status: 'open',
     });
 
-    // Add description as first message
     await queryMessageRepo.create({
+      workspaceId,
       queryId: query.id,
-      senderUserId: req.session.userId!,
+      senderUserId: user.id,
       message: parse.data.description,
       createdAt: new Date().toISOString(),
     });
 
-    const creator = userRepo.findById(req.session.userId!)!;
-    const tmpl = notifTemplates.queryCreated(creator.fullName, task.title);
+    const tmpl = notifTemplates.queryCreated(user.fullName, task.title);
     await createNotification({
+      workspaceId,
       recipientUserId: task.createdBy,
       eventType: 'QUERY_CREATED',
       title: tmpl.title,
       body: tmpl.body,
       relatedTaskId: task.id,
       relatedQueryId: query.id,
-      navigationUrl: `/queries/${query.id}`,
+      navigationUrl: `/admin/queries`,
     });
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: user.id,
       entityType: 'query',
       entityId: query.id,
       eventType: 'QUERY_CREATED',
       newState: 'open',
-      message: `Query "${parse.data.title}" raised by ${creator.fullName}`,
+      message: `Query "${parse.data.title}" raised by ${user.fullName}`,
     });
 
-    res.status(201).json({ success: true, data: enrichQuery(query.id) });
+    res.status(201).json({ success: true, data: await enrichQuery(query) });
   })
 );
 

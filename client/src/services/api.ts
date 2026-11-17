@@ -14,15 +14,35 @@ const api = axios.create({
   },
 });
 
-// Request interceptor: ALWAYS attach the authoritative TaskFlow user token first
+function getDeviceLabel(): string {
+  if (typeof navigator === 'undefined') return 'Web Browser';
+  const ua = navigator.userAgent;
+  if (ua.includes('Edg/')) return 'Microsoft Edge';
+  if (ua.includes('Chrome/')) return 'Google Chrome';
+  if (ua.includes('Firefox/')) return 'Mozilla Firefox';
+  if (ua.includes('Safari/') && !ua.includes('Chrome/')) return 'Apple Safari';
+  return 'Web Browser';
+}
+
+function setHeader(config: any, name: string, value: string) {
+  if (typeof config.headers?.set === 'function') {
+    config.headers.set(name, value);
+  } else {
+    config.headers[name] = value;
+  }
+}
+
+// Request interceptor: ALWAYS attach the authoritative TaskFlow session token & session headers
 api.interceptors.request.use(async (config) => {
+  const sessionId = localStorage.getItem('auth_session_id');
+  if (sessionId) {
+    setHeader(config, 'x-session-id', sessionId);
+  }
+  setHeader(config, 'x-device-label', getDeviceLabel());
+
   const token = localStorage.getItem('auth_token');
   if (token) {
-    if (typeof config.headers.set === 'function') {
-      config.headers.set('Authorization', `Bearer ${token}`);
-    } else {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    setHeader(config, 'Authorization', `Bearer ${token}`);
     return config;
   }
 
@@ -31,11 +51,7 @@ api.interceptors.request.use(async (config) => {
     try {
       const firebaseToken = await auth.currentUser.getIdToken();
       if (firebaseToken) {
-        if (typeof config.headers.set === 'function') {
-          config.headers.set('Authorization', `Bearer ${firebaseToken}`);
-        } else {
-          config.headers.Authorization = `Bearer ${firebaseToken}`;
-        }
+        setHeader(config, 'Authorization', `Bearer ${firebaseToken}`);
       }
     } catch {
       // Continue without token
@@ -44,18 +60,23 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
-// Response interceptor: unwrap data or safely handle session expiration without redirect loops
+// Response interceptor: safely handle 401 expiration without misclassifying 402/409 or auth/bootstrap calls
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
       const requestUrl = error.config?.url || '';
-      const isAuthEndpoint = requestUrl.includes('/auth/login') || requestUrl.includes('/auth/me');
+      const isPublicOrInitialEndpoint =
+        requestUrl.includes('/auth/login') ||
+        requestUrl.includes('/auth/me') ||
+        requestUrl.includes('/bootstrap');
 
-      // Do NOT wipe storage or redirect if the 401 came from an initial session check or login attempt
-      if (!isAuthEndpoint) {
+      if (!isPublicOrInitialEndpoint) {
         localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_session_id');
         localStorage.removeItem('auth_user');
+        localStorage.removeItem('auth_workspace');
+        localStorage.removeItem('auth_entitlement');
         if (!window.location.pathname.includes('/login')) {
           window.location.href = '/login';
         }
@@ -71,14 +92,51 @@ export default api;
 // API SERVICE FUNCTIONS
 // ============================================================
 
+// Workspace First-Time Bootstrap
+export const bootstrapApi = {
+  getStatus: () => api.get<ApiResponse>('/bootstrap/status'),
+  initializeWorkspace: (data: {
+    workspaceName: string;
+    adminFullName: string;
+    adminEmail: string;
+    adminPassword?: string;
+    firebaseIdToken?: string;
+    department?: string;
+    designation?: string;
+    timezone?: string;
+    setupSecret?: string;
+  }) => api.post<ApiResponse>('/bootstrap', data),
+};
+
 // Auth
 export const authApi = {
-  login: (email: string, password: string) =>
-    api.post<ApiResponse>('/auth/login', { email, password }),
-  logout: () => api.post<ApiResponse>('/auth/logout'),
+  login: (email: string, password: string, sessionId?: string) =>
+    api.post<ApiResponse>('/auth/login', { email, password, sessionId }),
+  loginWithFirebase: (firebaseIdToken: string, sessionId?: string) =>
+    api.post<ApiResponse>('/auth/login', { firebaseIdToken, sessionId }),
+  logout: (deviceId?: string) => api.post<ApiResponse>('/auth/logout', { deviceId }),
   me: () => api.get<ApiResponse>('/auth/me'),
   changePassword: (data: { currentPassword: string; newPassword: string }) =>
     api.post<ApiResponse>('/auth/change-password', data),
+};
+
+// Subscriptions & Entitlements
+export const subscriptionApi = {
+  getCurrent: () => api.get<ApiResponse>('/subscriptions/current'),
+  getHistory: () => api.get<ApiResponse>('/subscriptions/history'),
+};
+
+// Razorpay Payments
+export const paymentApi = {
+  getConfig: () => api.get<ApiResponse>('/payments/config'),
+  list: () => api.get<ApiResponse>('/payments'),
+  createRazorpayOrder: (data?: { idempotencyKey?: string }) =>
+    api.post<ApiResponse>('/payments/razorpay/order', data || {}),
+  verifyRazorpayPayment: (data: {
+    razorpayOrderId: string;
+    razorpayPaymentId: string;
+    razorpaySignature: string;
+  }) => api.post<ApiResponse>('/payments/razorpay/verify', data),
 };
 
 // Employees
@@ -95,7 +153,7 @@ export const employeeApi = {
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'taskflow_employees_credentials.csv');
+    link.setAttribute('download', 'taskflow_employees_directory.csv');
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -123,7 +181,7 @@ export const taskApi = {
     api.post<ApiResponse>(`/tasks/${taskId}/members/${memberId}/request-revision`, { reason }),
 };
 
-// Status Requests
+// Status Requests (Premium)
 export const statusRequestApi = {
   getAll: () => api.get<ApiResponse>('/status-requests'),
   getPresets: () => api.get<ApiResponse>('/status-requests/presets'),
@@ -203,16 +261,14 @@ export const pushApi = {
   sendTestPush: () => api.post<ApiResponse>('/push/test'),
 };
 
-// Google Meet & OAuth API
+// Google Meet & Workspace-Scoped Centralized OAuth API
 export const meetingApi = {
   getGoogleStatus: () => api.get<ApiResponse>('/admin/google/status'),
   getAuthUrl: () => api.get<ApiResponse>('/admin/google/auth-url'),
-  connectManual: (data: { email?: string; accessToken?: string }) =>
-    api.post<ApiResponse>('/admin/google/connect-manual', data),
   disconnectGoogle: () => api.post<ApiResponse>('/admin/google/disconnect'),
   createMeeting: (
     requestId: string,
-    data?: { accessToken?: string; meetingUri?: string; googleSpaceName?: string; meetingCode?: string }
+    data?: { idempotencyKey?: string; description?: string }
   ) => api.post<ApiResponse>(`/admin/status-requests/${requestId}/meetings`, data || {}),
   scheduleMeeting: (
     requestId: string,
@@ -227,4 +283,3 @@ export const meetingApi = {
   getMeetingByRequest: (requestId: string) =>
     api.get<ApiResponse>(`/status-requests/${requestId}/meeting`),
 };
-

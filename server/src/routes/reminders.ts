@@ -1,10 +1,14 @@
+// ============================================================
+// REMINDERS & IST SCHEDULER ROUTES (WORKSPACE-SCOPED ASYNC)
+// ============================================================
+
 import { Router } from 'express';
 import {
   taskRepo,
   taskMemberRepo,
   userRepo,
   reminderRepo,
-} from '../repositories/inMemoryStore.js';
+} from '../repositories/firestoreRepository.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { createNotification } from '../services/notificationService.js';
@@ -17,62 +21,68 @@ import { format } from 'date-fns';
 
 const router = Router();
 
-// ============================================================
-// IST CLOCK & AUTOMATED SCHEDULER STATUS (Authenticated)
-// ============================================================
-
 // GET /api/reminders/ist-status
 router.get(
   '/ist-status',
   requireAuth,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
     const istClock = getISTClock();
-    const stats = getISTSchedulerStats();
-    
-    // Enrich with list of active pending tasks that have reminder slots configured
-    const activeTasks = taskRepo.findAll()
-      .filter((t) => t.status !== 'cancelled' && t.status !== 'approved' && t.reminderEnabled)
-      .map((t) => {
-        const members = taskMemberRepo.findByTask(t.id);
-        const pendingMembers = members.filter(
-          (m) => m.memberStatus !== 'approved' && m.memberStatus !== 'submitted_for_review'
-        );
-        return {
-          id: t.id,
-          referenceNumber: t.referenceNumber,
-          title: t.title,
-          deadline: t.deadline,
-          reminderTimes: t.reminderTimes || [],
-          pendingMembersCount: pendingMembers.length,
-          pendingMembers: pendingMembers.map((pm) => {
-            const u = userRepo.findById(pm.userId);
-            return {
-              userId: pm.userId,
-              fullName: u?.fullName || 'Employee',
-              memberStatus: pm.memberStatus,
-            };
-          }),
-        };
-      });
+    const [stats, allTasks] = await Promise.all([
+      getISTSchedulerStats(workspaceId),
+      taskRepo.findAllInWorkspace(workspaceId),
+    ]);
+
+    const scheduledTasks = await Promise.all(
+      allTasks
+        .filter((t) => t.status !== 'cancelled' && t.status !== 'approved' && t.reminderEnabled)
+        .map(async (t) => {
+          const members = await taskMemberRepo.findByTask(t.id, workspaceId);
+          const pendingMembers = members.filter(
+            (m) => m.memberStatus !== 'approved' && m.memberStatus !== 'submitted_for_review'
+          );
+          const enrichedPending = await Promise.all(
+            pendingMembers.map(async (pm) => {
+              const u = await userRepo.findByIdInWorkspace(pm.userId, workspaceId);
+              return {
+                userId: pm.userId,
+                fullName: u?.fullName || 'Employee',
+                memberStatus: pm.memberStatus,
+              };
+            })
+          );
+          return {
+            id: t.id,
+            referenceNumber: t.referenceNumber,
+            title: t.title,
+            deadline: t.deadline,
+            reminderTimes: t.reminderTimes || [],
+            pendingMembersCount: pendingMembers.length,
+            pendingMembers: enrichedPending,
+          };
+        })
+    );
 
     res.json({
       success: true,
       data: {
         clock: istClock,
         stats,
-        scheduledTasks: activeTasks,
+        scheduledTasks,
       },
     });
   })
 );
 
-// POST /api/reminders/trigger-ist (Admin manual trigger to dispatch now)
+// POST /api/reminders/trigger-ist
 router.post(
   '/trigger-ist',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
     const { slot, forceAll, taskId } = req.body || {};
     const result = await checkAndDispatchPendingReminders({
+      workspaceId,
       targetSlot: slot,
       forceAll: forceAll !== undefined ? Boolean(forceAll) : true,
       taskId,
@@ -96,21 +106,22 @@ interface ReminderResult {
   reason?: string;
 }
 
-function evaluateReminders(): ReminderResult[] {
+async function evaluateReminders(workspaceId: string): Promise<ReminderResult[]> {
   const now = new Date();
   const results: ReminderResult[] = [];
 
-  const tasks = taskRepo.findAll().filter((t) => t.status !== 'cancelled' && t.reminderEnabled);
+  const tasks = (await taskRepo.findAllInWorkspace(workspaceId)).filter(
+    (t) => t.status !== 'cancelled' && t.reminderEnabled
+  );
 
   for (const task of tasks) {
-    const members = taskMemberRepo.findByTask(task.id);
+    const members = await taskMemberRepo.findByTask(task.id, workspaceId);
     const deadline = new Date(task.deadline);
 
     for (const member of members) {
-      const user = userRepo.findById(member.userId);
+      const user = await userRepo.findByIdInWorkspace(member.userId, workspaceId);
       if (!user) continue;
 
-      // Skip approved/cancelled members
       if (member.memberStatus === 'approved') {
         results.push({
           taskId: task.id,
@@ -137,7 +148,6 @@ function evaluateReminders(): ReminderResult[] {
         continue;
       }
 
-      // Check if submitted
       if (member.memberStatus === 'submitted_for_review') {
         results.push({
           taskId: task.id,
@@ -151,7 +161,6 @@ function evaluateReminders(): ReminderResult[] {
         continue;
       }
 
-      // Overdue
       if (deadline < now) {
         results.push({
           taskId: task.id,
@@ -164,7 +173,6 @@ function evaluateReminders(): ReminderResult[] {
         continue;
       }
 
-      // Approaching deadline (within 24 hours)
       const hoursToDeadline = (deadline.getTime() - now.getTime()) / (1000 * 60 * 60);
       if (hoursToDeadline <= 24) {
         results.push({
@@ -178,7 +186,6 @@ function evaluateReminders(): ReminderResult[] {
         continue;
       }
 
-      // Regular submission reminder
       results.push({
         taskId: task.id,
         taskTitle: task.title,
@@ -197,8 +204,8 @@ function evaluateReminders(): ReminderResult[] {
 router.get(
   '/preview',
   requireAdmin,
-  asyncHandler(async (_req, res) => {
-    const results = evaluateReminders();
+  asyncHandler(async (req, res) => {
+    const results = await evaluateReminders(req.authUser!.workspaceId);
     res.json({ success: true, data: results });
   })
 );
@@ -208,12 +215,12 @@ router.post(
   '/evaluate',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const results = evaluateReminders();
+    const workspaceId = req.authUser!.workspaceId;
+    const results = await evaluateReminders(workspaceId);
     const eligible = results.filter((r) => r.eligible);
 
-    // Create notification for each eligible reminder
     for (const reminder of eligible) {
-      const task = taskRepo.findById(reminder.taskId);
+      const task = await taskRepo.findByIdInWorkspace(reminder.taskId, workspaceId);
       if (!task) continue;
 
       let title = '';
@@ -230,16 +237,18 @@ router.post(
         body = `Please update your progress on "${task.title}".`;
       }
 
-      createNotification({
+      await createNotification({
+        workspaceId,
         recipientUserId: reminder.userId,
         eventType: reminder.reminderType === 'overdue' ? 'TASK_OVERDUE' : 'REMINDER_DUE',
         title,
         body,
         relatedTaskId: reminder.taskId,
-        navigationUrl: `/tasks/${reminder.taskId}`,
+        navigationUrl: `/employee/tasks/${reminder.taskId}`,
       });
 
-      reminderRepo.create({
+      await reminderRepo.create({
+        workspaceId,
         taskId: reminder.taskId,
         recipientUserId: reminder.userId,
         scheduledFor: new Date().toISOString(),
@@ -263,4 +272,3 @@ router.post(
 );
 
 export default router;
-

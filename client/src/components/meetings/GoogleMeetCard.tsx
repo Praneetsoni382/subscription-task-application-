@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Video,
@@ -11,12 +12,14 @@ import {
   AlertCircle,
   XCircle,
   RefreshCw,
+  CreditCard,
 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
+import { useAuth } from '../../contexts/AuthContext';
 import { meetingApi } from '../../services/api';
 import type { Meeting, StatusRequest } from '../../types';
 
@@ -29,7 +32,9 @@ interface Props {
 const TODAY_ISO = new Date().toISOString().split('T')[0];
 
 export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: Props) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { entitlement, refreshSession } = useAuth();
   const [copied, setCopied] = useState(false);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [meetingDate, setMeetingDate] = useState('');
@@ -38,80 +43,60 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
   const [scheduleError, setScheduleError] = useState('');
 
   const [creationError, setCreationError] = useState('');
+  const [creationErrorCode, setCreationErrorCode] = useState('');
   const [isCreatingMeet, setIsCreatingMeet] = useState(false);
 
-  // Fetch or retrieve meeting associated with status request
+  const isPremiumActive = Boolean(entitlement?.isPremiumActive);
+
+  // Fetch meeting only when Premium is active to respect entitlement rules cleanly
   const { data: meeting } = useQuery({
     queryKey: ['status-request-meeting', statusRequest.id],
     queryFn: async () => {
       const res = await meetingApi.getMeetingByRequest(statusRequest.id);
       return res.data?.data as Meeting | null;
     },
-    refetchInterval: 6000,
+    enabled: isPremiumActive,
+    refetchInterval: isPremiumActive ? 8000 : false,
   });
 
-  // Create Genuine Meet Link using Google Meet REST API v2
+  // Create Genuine Meet Link strictly on backend via Google Meet REST API v2 + Credit Reservation
   const handleCreateRealMeetLink = async () => {
     setCreationError('');
+    setCreationErrorCode('');
     setIsCreatingMeet(true);
     try {
-      const { getGoogleMeetAccessToken } = await import(
-        '../../services/googleMeet'
-      );
+      const idempotencyKey = `sr_${statusRequest.id}`;
+      await meetingApi.createMeeting(statusRequest.id, { idempotencyKey });
 
-      // 1. Check if token already available locally or via backend status
-      let token = (await getGoogleMeetAccessToken(false))?.accessToken;
-      if (!token) {
-        const statusRes = await meetingApi.getGoogleStatus();
-        const isConnected = !!(statusRes.data?.data as any)?.isConnected;
-
-        if (!isConnected) {
-          if (onOpenGoogleConnect) {
-            onOpenGoogleConnect();
-            setIsCreatingMeet(false);
-            return;
-          }
-          // Fall back to interactive popup only if modal callback unavailable
-          const authData = await getGoogleMeetAccessToken(true);
-          token = authData?.accessToken;
-        }
-      }
-
-      // 2. Persist & generate genuine space on server via Google Meet REST API v2
-      await meetingApi.createMeeting(statusRequest.id, {
-        accessToken: token && !token.startsWith('backend_') ? token : undefined,
-      });
-
-      queryClient.invalidateQueries({ queryKey: ['status-request-meeting', statusRequest.id] });
-      queryClient.invalidateQueries({ queryKey: ['admin-status-requests'] });
-      queryClient.invalidateQueries({ queryKey: ['status-requests'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['status-request-meeting', statusRequest.id] }),
+        queryClient.invalidateQueries({ queryKey: ['admin-status-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['status-requests'] }),
+        queryClient.invalidateQueries({ queryKey: ['subscription-current'] }),
+        queryClient.invalidateQueries({ queryKey: ['subscription-history'] }),
+        refreshSession(),
+      ]);
     } catch (err: any) {
-      console.error('Failed to create real Google Meet space:', err);
-      const msg = err?.response?.data?.error || err?.message || err?.code || '';
-      if (msg.includes('Google Meet authorization required') || msg.includes('No active Google Meet access token')) {
+      const code = err?.response?.data?.code || '';
+      const msg = err?.response?.data?.error || err?.message || '';
+      setCreationErrorCode(code);
+
+      if (code === 'GOOGLE_OAUTH_NOT_CONNECTED' || code === 'GOOGLE_TOKEN_REFRESH_FAILED') {
         setCreationError(
-          'Google Meet Authorization Required: Please click "Google Settings" above to connect your Google account with Google Meet permissions.'
+          msg ||
+            'Workspace Google Meet connection required. Please authorize Google Workspace OAuth in Google Settings.'
         );
         if (onOpenGoogleConnect) {
           onOpenGoogleConnect();
         }
-      } else if (msg.includes('popup-closed-by-user') || err?.code === 'auth/popup-closed-by-user') {
-        setCreationError(
-          'Sign-in window closed: Please click "Google Settings" to connect your Google account.'
-        );
-      } else if (msg.includes('popup-blocked') || err?.code === 'auth/popup-blocked') {
-        setCreationError(
-          'Popup Blocked: Please allow popups for this site and click "Google Settings" to connect your Google account.'
-        );
       } else {
-        setCreationError(msg || 'Failed to create real Google Meet space.');
+        setCreationError(msg || 'Failed to create Google Meet space.');
       }
     } finally {
       setIsCreatingMeet(false);
     }
   };
 
-  // Schedule & Publish Meeting Mutation (Admin)
   const scheduleMeetingMutation = useMutation({
     mutationFn: (data: { date: string; time: string; description?: string }) =>
       meetingApi.scheduleMeeting(statusRequest.id, data),
@@ -127,7 +112,6 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
     },
   });
 
-  // Cancel Meeting Mutation (Admin)
   const cancelMeetingMutation = useMutation({
     mutationFn: () => meetingApi.cancelMeeting(statusRequest.id),
     onSuccess: () => {
@@ -159,7 +143,6 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
     });
   };
 
-  // Helper formatting for IST display
   const formatISTDate = (isoStr?: string | null) => {
     if (!isoStr) return '';
     try {
@@ -180,17 +163,34 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
     try {
       const d = new Date(isoStr);
       return (
-        d.toLocaleTimeString('en-IN', {
-          timeZone: 'Asia/Kolkata',
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-        }).toUpperCase() + ' IST'
+        d
+          .toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+          })
+          .toUpperCase() + ' IST'
       );
     } catch {
       return isoStr;
     }
   };
+
+  if (!isPremiumActive) {
+    if (!isAdmin) return null;
+    return (
+      <div className="mt-3 pt-3 border-t border-[#E4E8EF] flex items-center justify-between gap-3 text-xs bg-[#F8FAFD] p-3 rounded-lg">
+        <span className="text-[#667085]">
+          Google Meet discussions require an active Premium subscription.
+        </span>
+        <Button size="sm" variant="outline" onClick={() => navigate('/admin/subscription')}>
+          <CreditCard size={13} />
+          Upgrade Plan
+        </Button>
+      </div>
+    );
+  }
 
   // Do not show card to employees if no published/scheduled meeting exists
   if (!isAdmin && (!meeting || meeting.status === 'draft')) {
@@ -205,6 +205,11 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
             <Video size={13} />
           </div>
           <h4 className="text-xs font-bold text-[#172033]">Google Meet Discussion</h4>
+          {isAdmin && entitlement && (
+            <span className="text-[10px] font-semibold text-[#667085]">
+              ({entitlement.meetCreditsRemaining}/{entitlement.meetCreditLimit} Meet credits left)
+            </span>
+          )}
         </div>
 
         {meeting && (
@@ -243,44 +248,60 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
 
       {/* STATE 1: No Meeting Linked (Admin View) */}
       {!meeting && isAdmin && (
-        <div className="p-2.5 bg-[#F9FBFF] rounded-lg border border-[#E4E8EF] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
-          <div className="flex items-center gap-2 text-[#667085]">
-            <span className="text-[11px]">No Google Meet discussion scheduled for this inquiry.</span>
-          </div>
+        <div className="p-2.5 bg-[#F9FBFF] rounded-lg border border-[#E4E8EF] space-y-2 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 text-[#667085]">
+              <span className="text-[11px]">No Google Meet discussion scheduled for this inquiry.</span>
+            </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {onOpenGoogleConnect && (
+            <div className="flex items-center gap-2 shrink-0">
+              {onOpenGoogleConnect && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onOpenGoogleConnect}
+                  className="text-[11px] text-[#667085] border-[#E4E8EF] h-7 px-2"
+                >
+                  Google Settings
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="outline"
-                onClick={onOpenGoogleConnect}
-                className="text-[11px] text-[#667085] border-[#E4E8EF] h-7 px-2"
+                onClick={handleCreateRealMeetLink}
+                loading={isCreatingMeet}
+                disabled={Boolean(entitlement && !entitlement.capabilities.canGenerateMeet)}
+                className="text-xs text-[#3157A4] border-[#B8D0F5] hover:bg-[#EBF3FF] h-7 px-2.5 font-medium"
               >
-                Google Settings
+                <Plus size={12} />
+                <span>Add Google Meet</span>
               </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleCreateRealMeetLink}
-              loading={isCreatingMeet}
-              className="text-xs text-[#3157A4] border-[#B8D0F5] hover:bg-[#EBF3FF] h-7 px-2.5 font-medium"
-            >
-              <Plus size={12} />
-              <span>Add Google Meet</span>
-            </Button>
+            </div>
           </div>
 
           {creationError && (
-            <div className="w-full p-2 bg-[#FFF0F0] text-[#D64545] rounded-md border border-[#F5B8B8] text-[11px] flex items-start gap-1.5 mt-1">
-              <AlertCircle size={13} className="shrink-0 mt-0.5" />
-              <span>{creationError}</span>
+            <div className="w-full p-2 bg-[#FFF0F0] text-[#D64545] rounded-md border border-[#F5B8B8] text-[11px] flex items-center justify-between gap-2">
+              <div className="flex items-start gap-1.5">
+                <AlertCircle size={13} className="shrink-0 mt-0.5" />
+                <span>{creationError}</span>
+              </div>
+              {(creationErrorCode === 'MEET_CREDITS_EXHAUSTED' ||
+                creationErrorCode === 'PREMIUM_REQUIRED') && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigate('/admin/subscription')}
+                  className="text-[11px] shrink-0"
+                >
+                  Billing
+                </Button>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* STATE 2: Draft Meeting Created (Unpublished - Admin View) */}
+      {/* STATE 2: Draft Meeting Created */}
       {meeting && meeting.status === 'draft' && isAdmin && (
         <div className="p-3.5 bg-[#FFFDF5] rounded-xl border border-[#F5D87E] space-y-3">
           <div className="text-xs space-y-1">
@@ -289,7 +310,7 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
                 Google Meet API Space (Draft State)
               </span>
               <span className="text-[10px] text-[#16865B] font-semibold bg-[#EDFAF4] px-1.5 py-0.5 rounded border border-[#A8DFC5]">
-                ✓ Verified Meet API Space
+                Verified Meet API Space
               </span>
             </div>
             <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-[#E4E8EF] text-xs font-mono text-[#3157A4]">
@@ -340,7 +361,7 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
         </div>
       )}
 
-      {/* STATE 3: Scheduled & Published Meeting (Admin & Employee View) */}
+      {/* STATE 3: Scheduled & Published Meeting */}
       {meeting && meeting.status === 'scheduled' && (
         <div className="p-3.5 bg-[#F0F9FF] rounded-xl border border-[#B8DDFB] space-y-3">
           <div className="space-y-1">
@@ -437,6 +458,7 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
               variant="outline"
               onClick={handleCreateRealMeetLink}
               loading={isCreatingMeet}
+              disabled={Boolean(entitlement && !entitlement.capabilities.canGenerateMeet)}
               className="text-xs border-[#F5B8B8] text-[#D64545]"
             >
               New Meet Link

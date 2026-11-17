@@ -6,16 +6,15 @@
 
 /* eslint-disable no-undef */
 
-// Load the Firebase app and messaging compat libraries for service worker execution
 importScripts('https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js');
 
 const firebaseConfig = {
-  projectId: "gen-lang-client-0565045974",
-  appId: "1:1088662376372:web:5f0e30f453df09c317ece1",
-  apiKey: "AIzaSyBZqef1J1Whtrinp7B9GHu0HTZYTp0Qy_c",
-  authDomain: "gen-lang-client-0565045974.firebaseapp.com",
-  messagingSenderId: "1088662376372"
+  projectId: "gen-lang-client-0707937978",
+  appId: "1:759056051727:web:22b5ac72acb18b5a43fd7a",
+  apiKey: "AIzaSyBoXlBfQ5qwWxqt7vBtSjP04D3PAM0Kon0",
+  authDomain: "gen-lang-client-0707937978.firebaseapp.com",
+  messagingSenderId: "759056051727"
 };
 
 try {
@@ -25,10 +24,7 @@ try {
     }
     const messaging = firebase.messaging();
 
-    // Firebase background message handler
     messaging.onBackgroundMessage((payload) => {
-      console.log('[firebase-messaging-sw] Received background FCM message:', payload);
-
       const notificationTitle =
         payload.notification?.title || payload.data?.title || 'TaskFlow Notification';
 
@@ -59,7 +55,6 @@ try {
   console.warn('[firebase-messaging-sw] Firebase SDK initialization notice:', err);
 }
 
-// Resilient native push event listener (ensures display even if compat layer encounters network delays)
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
@@ -85,15 +80,13 @@ self.addEventListener('push', (event) => {
 
     event.waitUntil(self.registration.showNotification(title, options));
   } catch {
-    // If not JSON or already handled by onBackgroundMessage
+    // Ignore malformed push payload
   }
 });
 
-// Handle notification click to navigate to the target application route
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  // Validate internal navigation target URL to prevent untrusted redirects
   let targetUrl = event.notification.data?.url || '/';
   if (!targetUrl.startsWith('/') && !targetUrl.startsWith(self.location.origin)) {
     targetUrl = '/';
@@ -106,7 +99,6 @@ self.addEventListener('notificationclick', (event) => {
         includeUncontrolled: true,
       })
       .then((windowClients) => {
-        // Focus existing open application tab if available
         for (const client of windowClients) {
           if (client.url.includes(self.location.origin) && 'focus' in client) {
             if ('navigate' in client && targetUrl !== '/') {
@@ -115,7 +107,6 @@ self.addEventListener('notificationclick', (event) => {
             return client.focus();
           }
         }
-        // Otherwise, open a new window
         if (clients.openWindow) {
           return clients.openWindow(targetUrl);
         }

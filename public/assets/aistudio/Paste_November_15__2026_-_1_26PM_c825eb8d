@@ -1,0 +1,975 @@
+# TASKFLOW — FRESH FIREBASE PROJECT + COMPLETE SUBSCRIPTION ARCHITECTURE FOUNDATION
+
+## PRIMARY OBJECTIVE
+
+I have opened the original TaskFlow GitHub repository in this Google AI Studio account.
+
+I want to establish a completely fresh Firebase infrastructure for TaskFlow using **Google AI Studio's native Firebase Firestore & Authentication integration**.
+
+Treat this as a new infrastructure setup. Do not reuse, connect to, import, or depend on any previous Firebase project, database, Firebase configuration, credentials, or environment variables.
+
+The existing TaskFlow source code is the application we are continuing to develop. Preserve its useful features and functionality, but establish a clean, independent backend foundation.
+
+This task includes:
+1. Creating a brand-new Firebase project through the native AI Studio integration.
+2. Provisioning a fresh Cloud Firestore database.
+3. Integrating Firebase Authentication.
+4. Establishing the complete Workspace and multi-tenant architecture.
+5. Designing the complete Free/Premium subscription system.
+6. Establishing the Google Meet integration and credit architecture.
+7. Preparing Razorpay payment architecture.
+8. Establishing secure session and single-device foundations.
+9. Implementing database security rules and indexes.
+10. Updating the complete technical blueprint and documentation.
+
+Do not stop after writing documentation. Perform every setup and code change that is genuinely possible through the native integration and the current development environment.
+
+---
+
+# PART 1 — FRESH FIREBASE PROVISIONING
+
+## 1.1 Create a new Firebase project
+
+Use the native Google AI Studio Firebase integration.
+
+I explicitly authorize you to initiate the creation of a completely new Firebase project for this TaskFlow application.
+
+Requirements:
+
+- Create a new project through the native integration.
+- Do not select an existing Firebase project.
+- Do not connect to any previously used Firebase project.
+- Do not reuse old Firebase configuration files or project identifiers.
+- Do not import old Firestore data.
+- Do not copy old credentials.
+- Do not use any old database as a fallback.
+
+Suggested project name:
+
+`TaskFlow-Subscription-Platform`
+
+Use a suitable unique Project ID generated or accepted by Google's integration.
+
+## 1.2 Firestore location
+
+Select `asia-south1` (Mumbai) if available.
+
+Before confirming, verify that the location is suitable for the new Firestore database.
+
+Important: The Firestore location is a permanent architectural decision. Do not select a different location without explaining why.
+
+## 1.3 Native integration requirements
+
+Launch the Firebase integration flow and provision:
+
+- Cloud Firestore.
+- Firebase Authentication.
+- Firebase application configuration.
+- Firestore Security Rules.
+- Required integration files.
+
+Use the integration's actual project-creation and provisioning mechanism.
+
+If the integration displays a project selection or confirmation card, present it and wait for my approval. Do not claim that provisioning has happened until it is confirmed.
+
+If an operation cannot be performed through the integration, explain the exact limitation. Do not fabricate a successful result or switch to manual credential entry as a workaround.
+
+## 1.4 Authentication
+
+Configure Firebase Authentication for TaskFlow.
+
+The intended application login model is:
+
+- Admin login.
+- Employee login.
+- Secure account creation and onboarding.
+- Password reset.
+- Password change.
+- Server-side role verification.
+
+Use Firebase Authentication as the identity provider wherever supported.
+
+Important:
+- Check whether Email/Password authentication is enabled by the native integration.
+- If supported, configure it.
+- If the integration only enables Google Sign-In, clearly report the limitation and the additional provider activation required.
+- Do not replace TaskFlow's existing login interface unnecessarily.
+- Never store plaintext passwords.
+- Never store temporary passwords in Firestore.
+- Never create hardcoded administrator credentials.
+- Never display demo passwords in the login interface.
+
+---
+
+# PART 2 — CORE APPLICATION ARCHITECTURE
+
+Preserve the existing React, Vite, TypeScript and Node.js/Express architecture.
+
+Target architecture:
+
+React + Vite frontend
+        |
+        v
+Node.js + Express backend
+        |
+        +---- Firebase Authentication
+        |
+        +---- Cloud Firestore
+        |
+        +---- Subscription & Entitlement Service
+        |
+        +---- Workspace Management
+        |
+        +---- Google Meet Service
+        |
+        +---- Payment Service (Razorpay)
+        |
+        +---- Session Management
+
+Firebase must be the persistent source of truth.
+
+Do not use:
+- In-memory arrays as the authoritative database.
+- LocalStorage as the authoritative source of business records.
+- Browser-side subscription calculations.
+- Client-provided roles as trusted authorization.
+- Fake API responses or simulated payment success.
+- Fake Google Meet links.
+
+The backend must remain authoritative for permissions, subscriptions, usage, payments, meeting credits and session enforcement.
+
+Keep the existing Render deployment architecture. Do not move the backend to Cloud Run or change hosting without my explicit approval.
+
+---
+
+# PART 3 — WORKSPACE ARCHITECTURE
+
+## 3.1 Workspace definition
+
+One Workspace represents one company, institution or team.
+
+A Workspace contains:
+
+- One Admin.
+- Multiple Employees.
+- Tasks.
+- Task assignments.
+- Status Requests.
+- Meetings.
+- Notifications.
+- Subscription information.
+- Usage information.
+- Audit history.
+
+Each customer gets a separate Workspace.
+
+The subscription belongs to the Workspace, not to an individual user.
+
+All users within a Workspace inherit its subscription entitlement, but their role-based permissions remain separate.
+
+## 3.2 Workspace rules
+
+Admin:
+- Can manage Workspace employees.
+- Can create and assign tasks.
+- Can view Workspace-wide task information.
+- Can create Status Requests when the subscription permits.
+- Can generate Google Meet links when the subscription permits.
+- Can view subscription details and usage.
+
+Employee:
+- Can view their assigned tasks.
+- Can update their task status.
+- Can view requests assigned to them.
+- Can respond to assigned requests when entitled.
+- Can join meetings for which they are invited.
+- Cannot manage subscriptions.
+- Cannot create Status Requests.
+- Cannot generate Google Meet links.
+
+All Workspace access must be enforced by the backend.
+
+## 3.3 Tenant isolation
+
+Use top-level Firestore collections with a mandatory `workspaceId` field wherever applicable.
+
+Every relevant backend query must verify Workspace ownership.
+
+Never allow an Admin or Employee from one Workspace to access another Workspace's records.
+
+---
+
+# PART 4 — FIRESTORE DATABASE SCHEMA
+
+Create and document the following collection structure.
+
+Use consistent TypeScript interfaces, validation schemas, timestamps, IDs and field naming.
+
+Every applicable record must contain:
+- `id`
+- `workspaceId`
+- `createdAt`
+- `updatedAt`
+
+Use server-generated timestamps wherever security or billing correctness matters.
+
+## 4.1 Core collections
+
+### workspaces
+
+Fields:
+- name
+- ownerUid
+- status
+- createdAt
+- updatedAt
+- subscriptionId
+- timezone
+- onboardingStatus
+
+### users
+
+Fields:
+- uid
+- workspaceId
+- name
+- email
+- role (`ADMIN` or `EMPLOYEE`)
+- employeeId
+- department
+- accountStatus
+- createdAt
+- updatedAt
+- lastLoginAt
+
+Never store plaintext passwords.
+
+### tasks
+
+Fields:
+- workspaceId
+- title
+- description
+- taskType (`SOLO` or `GROUP`)
+- assignedBy
+- assignedEmployeeIds
+- deadline
+- priority
+- status
+- createdAt
+- updatedAt
+
+### taskMembers
+
+Fields:
+- workspaceId
+- taskId
+- employeeUid
+- assignedAt
+- memberStatus
+
+### statusRequests
+
+Fields:
+- workspaceId
+- createdBy
+- assignedEmployeeIds
+- title
+- description
+- requestType
+- status
+- includeMeet
+- meetingId
+- createdAt
+- updatedAt
+
+### statusResponses
+
+Fields:
+- workspaceId
+- requestId
+- employeeUid
+- response
+- responseStatus
+- submittedAt
+- updatedAt
+
+### queries
+
+Fields:
+- workspaceId
+- createdBy
+- assignedTo
+- title
+- description
+- status
+- createdAt
+- updatedAt
+
+### queryMessages
+
+Fields:
+- workspaceId
+- queryId
+- senderUid
+- message
+- createdAt
+
+### chatMessages
+
+Fields:
+- workspaceId
+- taskId
+- senderUid
+- message
+- createdAt
+
+### notifications
+
+Fields:
+- workspaceId
+- recipientUid
+- type
+- title
+- message
+- relatedEntityId
+- read
+- createdAt
+
+### auditEvents
+
+Fields:
+- workspaceId
+- actorUid
+- action
+- entityType
+- entityId
+- metadata
+- createdAt
+
+### meetings
+
+Fields:
+- workspaceId
+- createdBy
+- requestId
+- taskId
+- invitedEmployeeIds
+- provider
+- meetingUrl
+- providerMeetingId
+- status
+- createdAt
+- updatedAt
+
+### reminderOccurrences
+
+Fields:
+- workspaceId
+- taskId
+- employeeUid
+- scheduledAt
+- status
+- processedAt
+
+### googleAuthTokens
+
+Fields:
+- workspaceId
+- connectedBy
+- encryptedAccessToken
+- encryptedRefreshToken
+- tokenExpiry
+- scopes
+- connectedAt
+- updatedAt
+
+Never expose OAuth tokens to frontend clients. Protect refresh tokens using a suitable encryption mechanism and backend-only access.
+
+---
+
+# PART 5 — COMPLETE SUBSCRIPTION MODEL
+
+This is a critical part of TaskFlow. Implement the data architecture and centralized entitlement foundation accurately.
+
+## 5.1 Subscription ownership
+
+One subscription belongs to one Workspace.
+
+All members of that Workspace inherit its subscription status.
+
+The Admin manages the subscription.
+
+Employees cannot independently purchase or modify the Workspace subscription.
+
+## 5.2 Free plan
+
+The Free plan provides all existing TaskFlow features subject to the existing role permissions.
+
+However, the following premium features must remain locked:
+
+- Entire Status Request module.
+- Status Request creation.
+- Employee Status Request responses.
+- Google Meet generation through TaskFlow.
+- Joining premium TaskFlow-generated meetings.
+- Premium meeting management.
+- Premium Meet credits.
+
+Free plan:
+- No Status Request functionality.
+- No ordinary Status Queries.
+- No Meet generation credits.
+
+Do not remove existing task-management functionality from the Free plan.
+
+## 5.3 Premium plan
+
+The Premium plan provides:
+
+1. Complete Status Request module.
+2. Admin ability to create Status Requests.
+3. Employee ability to view and respond to assigned requests.
+4. Admin ability to generate Google Meet links.
+5. Employees can join meetings when invited.
+6. Unlimited ordinary Status Queries during the active subscription period.
+7. Five successful Google Meet generations per Workspace per subscription period.
+
+The five Meet credits are shared across the entire Workspace, not assigned individually to users.
+
+Only the Admin can consume Meet credits.
+
+One meeting sent to multiple employees consumes one credit, not one credit per employee.
+
+## 5.4 Subscription duration
+
+Every Premium subscription period must last exactly 30 days.
+
+Use:
+
+`30 days = 2,592,000 seconds`
+
+Use server-generated UTC timestamps.
+
+Never rely on the browser clock to determine subscription activation or expiry.
+
+### Initial purchase
+
+If verified payment activation occurs at time T:
+
+- period starts at T.
+- period expires at T + 2,592,000 seconds.
+
+### Early renewal
+
+If the user renews before expiry:
+
+- next period starts at the current period's expiry.
+- prepaid time must not be lost.
+- next period expires exactly 30 days after the next period's start.
+
+### Late renewal
+
+If the subscription has already expired:
+
+- next period starts at the verified payment activation time.
+- do not backdate the new subscription.
+
+### Expiration
+
+After expiration:
+
+- Premium features become unavailable to Admin and Employees.
+- Status Request creation and responses are blocked.
+- New premium Meet generation and joining are blocked.
+- Existing historical records remain accessible according to role permissions.
+- Subscription history remains intact.
+- Renewal restores premium access.
+
+### Credit reset
+
+Each new 30-day period receives five fresh Meet credits.
+
+Unused credits do not roll over.
+
+---
+
+# PART 6 — SUBSCRIPTION DATABASE COLLECTIONS
+
+Create these dedicated collections.
+
+## 6.1 subscriptions
+
+Fields:
+- workspaceId
+- plan (`FREE` or `PREMIUM`)
+- status (`ACTIVE`, `EXPIRED`, `CANCELLED`, `PENDING`)
+- currentPeriodId
+- currentPeriodStart
+- currentPeriodEnd
+- autoRenew
+- createdAt
+- updatedAt
+
+## 6.2 subscriptionPeriods
+
+Each paid 30-day period must have a separate immutable historical record.
+
+Fields:
+- workspaceId
+- subscriptionId
+- periodNumber
+- plan
+- startAt
+- endAt
+- durationSeconds
+- paymentId
+- meetCreditLimit
+- meetCreditsUsed
+- meetCreditsReserved
+- status
+- createdAt
+
+## 6.3 subscriptionUsage
+
+Fields:
+- workspaceId
+- subscriptionId
+- periodId
+- statusQueriesUsed
+- meetCreditsUsed
+- meetCreditsReserved
+- meetCreditLimit
+- updatedAt
+
+Status Queries must be unlimited for the Premium period. Track usage for analytics without introducing an artificial usage cap.
+
+## 6.4 subscriptionEvents
+
+Fields:
+- workspaceId
+- subscriptionId
+- periodId
+- eventType
+- previousStatus
+- newStatus
+- paymentId
+- metadata
+- createdAt
+
+Subscription events must be auditable and must not be silently overwritten.
+
+## 6.5 payments
+
+Fields:
+- workspaceId
+- subscriptionId
+- periodId
+- gateway (`RAZORPAY`)
+- gatewayOrderId
+- gatewayPaymentId
+- amount
+- currency
+- status
+- idempotencyKey
+- paidAt
+- createdAt
+- updatedAt
+
+## 6.6 paymentEvents
+
+Fields:
+- workspaceId
+- paymentId
+- gateway
+- gatewayEventId
+- eventType
+- verificationStatus
+- receivedAt
+- processedAt
+- metadata
+
+Use unique event IDs and idempotent processing.
+
+## 6.7 meetGenerationOperations
+
+Fields:
+- workspaceId
+- periodId
+- requestedBy
+- idempotencyKey
+- operationStatus (`RESERVED`, `SUCCESS`, `FAILED`, `RECONCILIATION_REQUIRED`)
+- meetingId
+- providerMeetingId
+- reservedAt
+- completedAt
+- failureReason
+- createdAt
+- updatedAt
+
+---
+
+# PART 7 — GOOGLE MEET INTEGRATION ARCHITECTURE
+
+Google Meet generation must be centralized in a backend service named:
+
+`meetGenerationService`
+
+Every route that generates an actual Google Meet link must call this service.
+
+Known routes include:
+
+- `POST /api/tasks/:taskId/status-requests` when `includeMeet` is enabled.
+- `POST /api/status-requests/:requestId/meeting`.
+
+Inspect the entire repository for any other route that generates a meeting. Do not leave alternate paths that bypass credit validation.
+
+## 7.1 Credit reservation
+
+Before generating a meeting:
+
+1. Verify that the requester is an authenticated Admin.
+2. Verify Workspace membership.
+3. Verify an active Premium subscription.
+4. Verify that the current period has available credits.
+5. Reserve one credit using an atomic Firestore transaction.
+6. Create a unique operation record.
+7. Call the actual Google Meet API.
+8. On success, convert the reservation into one consumed credit.
+9. On permanent failure, release the reservation.
+
+Enforce:
+
+`meetCreditsUsed + meetCreditsReserved < 5`
+
+All operations must be transaction-safe.
+
+## 7.2 Credit rules
+
+- One successful meeting generation consumes one credit.
+- One meeting with multiple recipients consumes one credit.
+- Failed generation releases its reservation.
+- OAuth connection does not consume credits.
+- OAuth disconnection does not consume credits.
+- A meeting deleted after successful generation does not restore its credit.
+- Employees cannot consume credits.
+- Free Workspaces cannot generate premium meetings.
+
+Prevent double charging, duplicate requests and concurrent credit overspending.
+
+## 7.3 Google OAuth security
+
+Implement a secure OAuth architecture.
+
+Requirements:
+
+- Authenticated Admin only.
+- Workspace-scoped authorization.
+- Secure state validation.
+- State expiration and one-time use.
+- No fallback Admin UID.
+- No fallback token belonging to another user or Workspace.
+- No arbitrary manual token injection.
+- No wildcard postMessage origin.
+- No fake Meet URL generation.
+- No fabricated meeting success.
+- Clear error handling when Google APIs fail.
+
+Use one authoritative Admin Google OAuth connection per Workspace unless the existing architecture requires otherwise.
+
+If OAuth credentials are not available, create secure environment-variable placeholders and document the exact required provider credentials. Never invent credentials.
+
+---
+
+# PART 8 — RAZORPAY PAYMENT ARCHITECTURE
+
+Prepare the application for Razorpay subscription payments in India.
+
+Do not invent a subscription price. Keep the price configurable on the backend.
+
+## 8.1 Payment process
+
+1. Admin selects Premium.
+2. Backend creates a pending payment record.
+3. Backend creates the Razorpay order using its configured server-side price.
+4. Frontend opens Razorpay Checkout.
+5. Frontend sends payment identifiers and signature to backend.
+6. Backend independently verifies the payment signature.
+7. Razorpay webhook independently verifies its signature using the raw request body.
+8. Only a verified successful payment activates the subscription.
+9. Payment events are processed idempotently.
+10. Successful verified webhook processing must work even if the user closes the browser.
+
+## 8.2 Security
+
+- Razorpay Key Secret must never be exposed to frontend code.
+- Razorpay webhook secret must remain server-side.
+- Never accept a frontend-provided amount as authoritative.
+- Never activate Premium based only on a frontend callback.
+- Never store card details.
+- Maintain immutable payment records and audit events.
+
+Create placeholders for:
+
+- `RAZORPAY_KEY_ID`
+- `RAZORPAY_KEY_SECRET`
+- `RAZORPAY_WEBHOOK_SECRET`
+- `PREMIUM_PLAN_AMOUNT`
+- `PREMIUM_PLAN_CURRENCY`
+
+Use INR as the intended currency unless later changed through an approved configuration.
+
+Do not activate live payments without my explicit approval and real credentials.
+
+---
+
+# PART 9 — CENTRALIZED ENTITLEMENT ENGINE
+
+Create a single backend entitlement service.
+
+Suggested name:
+
+`subscriptionEntitlementService`
+
+It must answer whether a user can perform a specific premium action.
+
+Examples:
+
+- `canCreateStatusRequest(user, workspace)`
+- `canRespondToStatusRequest(user, workspace)`
+- `canGenerateMeet(user, workspace)`
+- `canJoinPremiumMeeting(user, workspace)`
+- `canUseStatusQueries(user, workspace)`
+
+Rules:
+
+- Free plan denies all premium capabilities.
+- Active Premium allows capabilities according to role.
+- Expired Premium denies new premium operations.
+- Admin-only actions remain Admin-only.
+- Employees cannot bypass subscription checks through direct API requests.
+- Frontend visibility is supplementary; backend enforcement is mandatory.
+
+Do not duplicate subscription logic independently across routes.
+
+---
+
+# PART 10 — SINGLE-DEVICE LOGIN FOUNDATION
+
+Implement a secure single-active-device model for each individual account.
+
+This is not Workspace-wide. Each Admin and each Employee has their own session restriction.
+
+Rules:
+
+- One account can have one active device session.
+- If Device A is active, Device B login must be denied.
+- Device B must not silently revoke Device A.
+- Explicit logout releases the active session.
+- Expired or inactive sessions can be recovered securely.
+- Device labels are informational, not proof of device identity.
+
+Use a durable Firestore structure:
+
+`activeSessions/{uid}`
+
+Fields:
+- uid
+- workspaceId
+- sessionId
+- deviceLabel
+- status
+- createdAt
+- lastActivityAt
+- expiresAt
+
+Use an atomic transaction for session creation.
+
+The backend must validate the session on protected requests.
+
+Use a configurable inactivity timeout. Start with 30 minutes as the proposed default.
+
+Do not trust localStorage device identifiers as a security mechanism.
+
+---
+
+# PART 11 — FIRESTORE SECURITY AND INDEXES
+
+Create strict Firestore Security Rules.
+
+Requirements:
+
+- Default deny.
+- No `allow read, write: if true`.
+- Authenticate users.
+- Enforce Workspace isolation.
+- Protect subscription and payment collections.
+- Protect OAuth tokens.
+- Prevent employees from changing their own role.
+- Prevent users from modifying subscription status or payment status.
+- Prevent clients from consuming or resetting Meet credits.
+- Restrict privileged operations to trusted backend logic.
+
+Where possible, direct client writes should be limited to explicitly approved user-owned operations.
+
+Use Firebase Admin SDK only in trusted backend environments.
+
+Create `firestore.indexes.json` for the required query patterns.
+
+Keep security rules consistent with the actual data model.
+
+Do not weaken rules just to eliminate a permission error.
+
+Remember that Firebase Admin SDK bypasses Firestore Security Rules. The Express backend must enforce authorization independently.
+
+---
+
+# PART 12 — BACKEND CREDENTIALS AND INTEGRATION LIMITATIONS
+
+The existing TaskFlow backend uses Node.js and Express and is hosted on Render.
+
+The AI Studio native integration may grant its own service account access to Firestore, but do not assume that this automatically authenticates the Render backend.
+
+Investigate the actual integration environment.
+
+- Use native integration configuration where genuinely supported.
+- Never expose private service-account keys in frontend code.
+- Never commit secrets.
+- Do not silently use an old Firebase configuration.
+- Do not replace Render hosting.
+- Do not migrate the backend to Cloud Run.
+
+If Render needs a separate trusted Google Cloud identity, prepare the backend for secure service-account authentication through environment variables or an appropriate supported identity mechanism.
+
+Use placeholders and explain the exact remaining credential requirement.
+
+Do not ask me to paste secrets into source code or commit them to GitHub.
+
+---
+
+# PART 13 — FRESH WORKSPACE INITIALIZATION
+
+Prepare a secure first-time Workspace bootstrap process.
+
+The initial application setup should support:
+
+1. Creating the first Workspace.
+2. Creating its first Admin account.
+3. Associating the Admin with the Workspace.
+4. Creating a default Free subscription.
+5. Initializing subscription usage.
+6. Allowing the Admin to invite Employees.
+
+Do not hardcode a default Admin password.
+
+Do not seed fake users or production task records.
+
+The bootstrap must be secure, idempotent and protected against unauthorized repeated execution.
+
+---
+
+# PART 14 — BLUEPRINT AND DOCUMENTATION
+
+Update the repository's architectural documentation.
+
+Maintain a consistent source of truth between code, types, rules, indexes and documentation.
+
+Create or update:
+
+- `firebase-blueprint.json` only through the supported AI Studio integration workflow; do not manually fabricate or overwrite integration-managed metadata.
+- `firestore.rules`
+- `firestore.indexes.json`
+- `docs/ARCHITECTURE.md`
+- `docs/FIRESTORE_SCHEMA.md`
+- `docs/WORKSPACE_MODEL.md`
+- `docs/SUBSCRIPTION_MODEL.md`
+- `docs/GOOGLE_MEET_ARCHITECTURE.md`
+- `docs/RAZORPAY_PAYMENT_ARCHITECTURE.md`
+- `docs/SECURITY_MODEL.md`
+- `docs/SESSION_MANAGEMENT.md`
+- `docs/ENVIRONMENT_SETUP.md`
+- `docs/IMPLEMENTATION_ROADMAP.md`
+
+Document all Free and Premium entitlements, 30-day period calculations, renewal rules, Meet credit reservations, payment verification, OAuth security and Workspace isolation.
+
+---
+
+# PART 15 — IMPLEMENTATION AND GIT RULES
+
+Preserve the existing TaskFlow application.
+
+Do not rebuild it from scratch.
+
+Do not remove existing features merely because they are not part of the subscription model.
+
+Use only the `main` branch.
+
+Do not create multiple branches.
+
+Before significant changes:
+- Inspect the existing implementation.
+- Identify affected files.
+- Preserve working features.
+- Review the diff after modifications.
+- Run available build and type checks.
+
+Do not deploy to production.
+
+Do not migrate historical data.
+
+Do not connect old databases.
+
+Do not overwrite unrelated code.
+
+Do not invent credentials, provider responses or successful API operations.
+
+---
+
+# PART 16 — VERIFICATION AND FINAL REPORT
+
+After implementation, verify what has actually been completed.
+
+Provide a structured report with:
+
+1. New Firebase project name and verified Project ID.
+2. Firestore database ID and region.
+3. Firebase Authentication integration status.
+4. Firestore connection status.
+5. Security rules status.
+6. Indexes created.
+7. Collections and schema established.
+8. Workspace architecture status.
+9. Free/Premium subscription architecture status.
+10. 30-day subscription calculation and renewal design.
+11. Meet credit reservation architecture status.
+12. Google OAuth configuration status.
+13. Razorpay configuration status.
+14. Single-device session foundation status.
+15. Modified and created files.
+16. Build and type-check results.
+17. Remaining external credentials or approvals.
+18. Any integration limitations.
+
+Clearly distinguish:
+
+- Successfully provisioned cloud resources.
+- Implemented application code.
+- Documented architecture.
+- Pending external provider credentials.
+- Pending user approvals.
+
+Never mark a feature complete merely because its documentation exists.
+
+## FINAL EXECUTION INSTRUCTION
+
+Start by inspecting the current TaskFlow repository and launching the native Firebase integration.
+
+Create a brand-new Firebase project through Google AI Studio. Configure the Firestore database and Authentication through the integration.
+
+Then implement the complete subscription architecture foundation described above, keeping all code and documentation consistent.
+
+Do not stop after displaying a generic setup guide.
+
+Complete every operation available to you, request my approval only when the native integration requires it, and clearly report anything that genuinely cannot be automated.
+
+The result must be a clean, secure and independent TaskFlow foundation ready for the subsequent implementation and testing of the subscription, payment and Google Meet features.

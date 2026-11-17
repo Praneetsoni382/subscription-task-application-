@@ -1,5 +1,5 @@
 // ============================================================
-// GOOGLE MEET & OAUTH API ROUTES
+// GOOGLE MEET & CENTRALIZED OAUTH API ROUTES
 // File: server/src/routes/meetings.ts
 // ============================================================
 
@@ -9,31 +9,36 @@ import {
   meetingRepo,
   statusRequestRepo,
   taskRepo,
-  userRepo,
-  googleAuthRepo,
   taskMemberRepo,
-} from '../repositories/inMemoryStore.js';
+  userRepo,
+} from '../repositories/firestoreRepository.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { asyncHandler } from '../middleware/errorHandler.js';
+import { asyncHandler, HttpError } from '../middleware/errorHandler.js';
 import {
   createNotification,
   createAuditEvent,
   notifTemplates,
 } from '../services/notificationService.js';
 import {
-  getGoogleOAuthUrl,
-  exchangeCodeForTokens,
-  createGoogleMeetSpace,
-  createOAuthState,
   consumeOAuthState,
+  createOAuthState,
+  disconnectWorkspaceGoogleOAuth,
+  exchangeCodeForTokens,
+  generateMeetForWorkspace,
+  getGoogleOAuthUrl,
+  getWorkspaceGoogleStatus,
   resolveRedirectUri,
-} from '../services/googleMeetService.js';
-import type { Meeting } from '../types/index.js';
+} from '../services/meetGenerationService.js';
+import {
+  assertEntitlement,
+  canCreateStatusRequest,
+  canJoinPremiumMeeting,
+} from '../services/subscriptionEntitlementService.js';
 
 const router = Router();
 
 // ============================================================
-// 1. ADMIN GOOGLE OAUTH MANAGEMENT ENDPOINTS
+// 1. ADMIN GOOGLE OAUTH MANAGEMENT ENDPOINTS (WORKSPACE-SCOPED)
 // ============================================================
 
 // GET /api/admin/google/status
@@ -41,23 +46,12 @@ router.get(
   '/google/status',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const tokens = googleAuthRepo.getTokens(req.session.userId!);
-    const hasClientId = !!process.env.GOOGLE_CLIENT_ID;
-
-    res.json({
-      success: true,
-      data: {
-        isConnected: !!tokens && !!tokens.accessToken,
-        connectedEmail: tokens?.email || 'admin@company.com',
-        hasClientId,
-        updatedAt: tokens?.updatedAt || null,
-      },
-    });
+    const status = await getWorkspaceGoogleStatus(req.authUser!.workspaceId);
+    res.json({ success: true, data: status });
   })
 );
 
 // GET /api/admin/google/auth-url
-// Returns dynamic Google OAuth URL with cryptographically secure state
 router.get(
   '/google/auth-url',
   requireAdmin,
@@ -67,7 +61,12 @@ router.get(
     const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
     const redirectUri = resolveRedirectUri(explicitUri, host, proto);
 
-    const state = createOAuthState(req.session.userId!, redirectUri, '/admin/status-requests');
+    const state = await createOAuthState({
+      workspaceId: req.authUser!.workspaceId,
+      adminUid: req.authUser!.id,
+      redirectUri,
+      returnTo: '/admin/status-requests',
+    });
     const authUrl = getGoogleOAuthUrl(state, redirectUri);
 
     res.json({
@@ -81,27 +80,29 @@ router.get(
   })
 );
 
-// GET /api/admin/google/authorize
-// Direct browser-redirect initiation (Redirect Mode - eliminates popups entirely)
+// GET /api/admin/google/authorize (requires authenticated admin; never uses hardcoded uid)
 router.get(
   '/google/authorize',
+  requireAdmin,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId || 'seed-admin-001';
     const explicitUri = typeof req.query.redirect_uri === 'string' ? req.query.redirect_uri : undefined;
     const proto = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
     const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
     const redirectUri = resolveRedirectUri(explicitUri, host, proto);
 
-    const state = createOAuthState(userId, redirectUri, '/admin/status-requests');
+    const state = await createOAuthState({
+      workspaceId: req.authUser!.workspaceId,
+      adminUid: req.authUser!.id,
+      redirectUri,
+      returnTo: '/admin/status-requests',
+    });
     const authUrl = getGoogleOAuthUrl(state, redirectUri);
 
-    // Direct 302 navigation to Google Accounts
     res.redirect(authUrl);
   })
 );
 
 // GET /api/admin/google/callback
-// Handles Google OAuth 2.0 authorization code redirect return
 router.get(
   '/google/callback',
   asyncHandler(async (req, res) => {
@@ -119,27 +120,19 @@ router.get(
     }
 
     const stateStr = typeof state === 'string' ? state : '';
-    const statePayload = consumeOAuthState(stateStr);
-
-    const proto = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
-    const fallbackRedirectUri = resolveRedirectUri(undefined, host, proto);
-    const redirectUriToUse = statePayload?.redirectUri || fallbackRedirectUri;
-    const userId = statePayload?.userId || req.session.userId || 'seed-admin-001';
 
     try {
-      await exchangeCodeForTokens(code, userId, redirectUriToUse);
-
-      // Re-establish admin session if needed
-      req.session.userId = userId;
-      req.session.role = 'admin';
-
-      req.session.save((saveErr) => {
-        if (saveErr) {
-          console.warn('Session save notice after OAuth callback:', saveErr);
-        }
-        res.redirect('/admin/status-requests?google_connected=true');
+      const statePayload = await consumeOAuthState(stateStr);
+      await exchangeCodeForTokens({
+        code,
+        workspaceId: statePayload.workspaceId,
+        adminUid: statePayload.adminUid,
+        redirectUri: statePayload.redirectUri,
       });
+
+      const returnTo = statePayload.returnTo || '/admin/status-requests';
+      const separator = returnTo.includes('?') ? '&' : '?';
+      res.redirect(`${returnTo}${separator}google_connected=true`);
     } catch (err) {
       console.error('OAuth Callback Error:', err);
       const errMsg = err instanceof Error ? err.message : 'Google OAuth authentication failed';
@@ -148,51 +141,13 @@ router.get(
   })
 );
 
-// POST /api/admin/google/connect-manual (Allows direct account connection / token input for testing)
-router.post(
-  '/google/connect-manual',
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    const { email, accessToken } = req.body;
-    const tokens = await googleAuthRepo.saveTokens({
-      userId: req.session.userId!,
-      accessToken: accessToken || 'manual_oauth_token_' + Date.now(),
-      email: email || (userRepo.findById(req.session.userId!)?.email) || 'admin@company.com',
-      expiryDate: Date.now() + 86400 * 1000,
-      updatedAt: new Date().toISOString(),
-    });
-
-    res.json({
-      success: true,
-      data: {
-        isConnected: true,
-        connectedEmail: tokens.email,
-      },
-    });
-  })
-);
-
 // POST /api/admin/google/disconnect
 router.post(
   '/google/disconnect',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    await googleAuthRepo.clearTokens(req.session.userId!);
-    res.json({ success: true, message: 'Google account disconnected successfully' });
-  })
-);
-
-// POST /api/admin/google/create-space (Server-side proxy for Google Meet REST API v2 space creation)
-router.post(
-  '/google/create-space',
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    const authHeader = req.headers.authorization;
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
-    const token = req.body?.accessToken || bearerToken;
-
-    const spaceResult = await createGoogleMeetSpace(req.session.userId!, token);
-    res.json({ success: true, data: spaceResult });
+    await disconnectWorkspaceGoogleOAuth(req.authUser!.workspaceId, req.authUser!.id);
+    res.json({ success: true, message: 'Workspace Google account disconnected successfully' });
   })
 );
 
@@ -200,106 +155,93 @@ router.post(
 // 2. GOOGLE MEET FOR STATUS REQUESTS ENDPOINTS
 // ============================================================
 
-// POST /api/admin/status-requests/:requestId/meetings (Create Meet Link -> Draft)
+// POST /api/admin/status-requests/:requestId/meetings (Create genuine Meet Link via Backend + Consume 1 Credit)
 router.post(
   '/status-requests/:requestId/meetings',
   requireAdmin,
   asyncHandler(async (req, res) => {
     const { requestId } = req.params;
-    const { accessToken, meetingUri, googleSpaceName, meetingCode } = req.body || {};
+    const workspaceId = req.authUser!.workspaceId;
 
-    const sr = statusRequestRepo.findById(requestId);
+    const sr = await statusRequestRepo.findByIdInWorkspace(requestId, workspaceId);
     if (!sr) {
       res.status(404).json({ success: false, error: 'Status Request not found' });
       return;
     }
 
-    const task = taskRepo.findById(sr.taskId);
+    const task = await taskRepo.findByIdInWorkspace(sr.taskId, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Associated Task not found' });
       return;
     }
 
-    // Check if meeting already exists for this specific statusRequest
-    let existingMeeting: any = null;
-    if (sr.meetingId) {
-      existingMeeting = meetingRepo.findById(sr.meetingId);
-    }
+    // Check if meeting already exists for this statusRequest (do not charge credit twice)
+    let existingMeeting = sr.meetingId
+      ? await meetingRepo.findByIdInWorkspace(sr.meetingId, workspaceId)
+      : null;
     if (!existingMeeting) {
-      existingMeeting = meetingRepo.findByStatusRequest(requestId);
-    }
-    if (!existingMeeting) {
-      existingMeeting = await meetingRepo.fetchFromCloudByStatusRequest(requestId);
+      existingMeeting = await meetingRepo.findByStatusRequestInWorkspace(requestId, workspaceId);
     }
 
     if (existingMeeting) {
-      if (!sr.meetingId) await statusRequestRepo.update(sr.id, { meetingId: existingMeeting.id });
+      if (!sr.meetingId) {
+        await statusRequestRepo.update(sr.id, { meetingId: existingMeeting.id });
+      }
       res.status(200).json({ success: true, data: existingMeeting });
       return;
     }
 
-    // Create genuine Google Meet space via Google Meet REST API v2 (or use client-provided verified space)
-    const spaceResult = await createGoogleMeetSpace(
-      req.session.userId!,
-      accessToken,
-      requestId,
-      meetingUri,
-      googleSpaceName
-    );
+    const idempotencyKey =
+      typeof req.body?.idempotencyKey === 'string' && req.body.idempotencyKey.trim()
+        ? req.body.idempotencyKey.trim()
+        : undefined;
 
-    const meetingTitle = `Google Meet Discussion: Status Request on ${task.title}`;
-
-    const newMeeting = await meetingRepo.create({
-      statusRequestId: sr.id,
+    const { meeting } = await generateMeetForWorkspace({
+      actor: req.authUser!,
       taskId: task.id,
-      createdByAdminUid: req.session.userId!,
-      googleSpaceName: spaceResult.googleSpaceName,
-      meetingUri: spaceResult.meetingUri,
-      meetingTitle,
-      description: '',
+      meetingTitle: `Google Meet Discussion: Status Request on ${task.title}`,
+      description: typeof req.body?.description === 'string' ? req.body.description : '',
+      statusRequestIds: [sr.id],
+      invitedEmployeeIds: [sr.recipientUserId],
       status: 'draft',
-      timezone: 'Asia/Kolkata',
+      idempotencyKey,
     });
 
-    // Store meetingId strictly on this specific status request
-    await statusRequestRepo.update(sr.id, { meetingId: newMeeting.id });
+    await statusRequestRepo.update(sr.id, { meetingId: meeting.id });
 
-    await createAuditEvent({
-      actorUserId: req.session.userId!,
-      entityType: 'status_request',
-      entityId: sr.id,
-      eventType: 'STATUS_REQUEST_SENT',
-      message: `Genuine Google Meet space created (Draft) via Google Meet API: ${spaceResult.meetingUri}`,
-    });
-
-    res.status(201).json({ success: true, data: newMeeting });
+    res.status(201).json({ success: true, data: meeting });
   })
 );
 
-// POST /api/admin/status-requests/:requestId/meetings/schedule (Schedule & Publish -> Immediate Notifications)
+// POST /api/admin/status-requests/:requestId/meetings/schedule
 router.post(
   '/status-requests/:requestId/meetings/schedule',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
+    assertEntitlement(await canCreateStatusRequest(req.authUser!, workspaceId));
+
     const { requestId } = req.params;
-    const sr = statusRequestRepo.findById(requestId);
+    const sr = await statusRequestRepo.findByIdInWorkspace(requestId, workspaceId);
     if (!sr) {
       res.status(404).json({ success: false, error: 'Status Request not found' });
       return;
     }
 
-    let meeting = meetingRepo.findByStatusRequest(requestId);
+    let meeting = sr.meetingId
+      ? await meetingRepo.findByIdInWorkspace(sr.meetingId, workspaceId)
+      : null;
     if (!meeting) {
-      meeting = await meetingRepo.fetchFromCloudByStatusRequest(requestId);
+      meeting = await meetingRepo.findByStatusRequestInWorkspace(requestId, workspaceId);
     }
     if (!meeting) {
-      res.status(400).json({ success: false, error: 'Please create a Google Meet link first before scheduling.' });
+      res.status(400).json({ success: false, error: 'Please generate a Google Meet link first before scheduling.' });
       return;
     }
 
     const schema = z.object({
-      date: z.string().min(1, 'Meeting date is required'), // YYYY-MM-DD
-      time: z.string().min(1, 'Meeting time is required'), // HH:MM
+      date: z.string().min(1, 'Meeting date is required'),
+      time: z.string().min(1, 'Meeting time is required'),
       description: z.string().optional().default(''),
     });
 
@@ -310,18 +252,12 @@ router.post(
     }
 
     const { date, time, description } = parse.data;
-
-    // Validate that scheduled time is not in the past (IST time comparison)
-    const scheduledDateTimeStr = `${date}T${time}:00+05:30`;
-    const scheduledDateObj = new Date(scheduledDateTimeStr);
-    const now = new Date();
-
+    const scheduledDateObj = new Date(`${date}T${time}:00+05:30`);
     if (isNaN(scheduledDateObj.getTime())) {
       res.status(400).json({ success: false, error: 'Invalid date or time format provided.' });
       return;
     }
-
-    if (scheduledDateObj.getTime() < now.getTime() - 60000) {
+    if (scheduledDateObj.getTime() < Date.now() - 60_000) {
       res.status(400).json({ success: false, error: 'Cannot schedule a Google Meet discussion in the past.' });
       return;
     }
@@ -335,7 +271,6 @@ router.post(
       timezone: 'Asia/Kolkata',
     });
 
-    // Check if scheduled for today in IST
     const istNowStr = new Date().toLocaleDateString('en-IN', {
       timeZone: 'Asia/Kolkata',
       year: 'numeric',
@@ -350,7 +285,6 @@ router.post(
     });
     const isToday = istNowStr === meetingDateIstStr;
 
-    // Format IST date and time strings for human notification
     const dateFormatted = scheduledDateObj.toLocaleDateString('en-IN', {
       timeZone: 'Asia/Kolkata',
       day: '2-digit',
@@ -366,11 +300,8 @@ router.post(
       })
       .toUpperCase();
 
-    // IMMEDIATE NOTIFICATION DELIVERY TO ALL CONCERNED EMPLOYEE(S)
-    const recipientUids = new Set<string>();
-    recipientUids.add(sr.recipientUserId);
-
-    const siblingRequests = statusRequestRepo.findByTask(sr.taskId);
+    const recipientUids = new Set<string>([sr.recipientUserId, ...(meeting.invitedEmployeeIds || [])]);
+    const siblingRequests = await statusRequestRepo.findByTaskInWorkspace(sr.taskId, workspaceId);
     for (const sib of siblingRequests) {
       if (sib.meetingId === meeting.id) {
         recipientUids.add(sib.recipientUserId);
@@ -379,9 +310,10 @@ router.post(
 
     const tmpl = notifTemplates.meetingScheduled(dateFormatted, timeFormatted, isToday);
     for (const uid of recipientUids) {
-      const recipientUser = userRepo.findById(uid) || (await userRepo.fetchFromCloudById(uid));
+      const recipientUser = await userRepo.findByIdInWorkspace(uid, workspaceId);
       if (recipientUser) {
         await createNotification({
+          workspaceId,
           recipientUserId: uid,
           eventType: 'STATUS_REQUESTED',
           title: tmpl.title,
@@ -394,11 +326,12 @@ router.post(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: req.authUser!.id,
       entityType: 'status_request',
       entityId: sr.id,
       eventType: 'STATUS_REQUEST_SENT',
-      message: `Google Meet discussion scheduled for ${dateFormatted} at ${timeFormatted} IST and published to ${recipientUids.size} employee(s). Link: ${meeting.meetingUri}`,
+      message: `Google Meet discussion scheduled for ${dateFormatted} at ${timeFormatted} IST and published to ${recipientUids.size} employee(s).`,
     });
 
     res.status(200).json({ success: true, data: updatedMeeting });
@@ -410,45 +343,49 @@ router.patch(
   '/status-requests/:requestId/meetings',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
+    assertEntitlement(await canCreateStatusRequest(req.authUser!, workspaceId));
+
     const { requestId } = req.params;
-    const sr = statusRequestRepo.findById(requestId);
+    const sr = await statusRequestRepo.findByIdInWorkspace(requestId, workspaceId);
     if (!sr) {
       res.status(404).json({ success: false, error: 'Status Request not found' });
       return;
     }
 
-    const meeting = meetingRepo.findByStatusRequest(requestId);
+    const meeting = sr.meetingId
+      ? await meetingRepo.findByIdInWorkspace(sr.meetingId, workspaceId)
+      : await meetingRepo.findByStatusRequestInWorkspace(requestId, workspaceId);
     if (!meeting) {
       res.status(404).json({ success: false, error: 'Meeting record not found' });
       return;
     }
 
-    const { date, time, description } = req.body;
+    const { date, time, description } = req.body || {};
     let scheduledAt = meeting.scheduledAt;
     let dateFormatted = '';
     let timeFormatted = '';
 
     if (date && time) {
-      const scheduledDateTimeStr = `${date}T${time}:00+05:30`;
-      const dateObj = new Date(scheduledDateTimeStr);
-      if (!isNaN(dateObj.getTime())) {
-        scheduledAt = dateObj.toISOString();
-
-        dateFormatted = dateObj.toLocaleDateString('en-IN', {
-          timeZone: 'Asia/Kolkata',
-          day: '2-digit',
-          month: 'short',
-          year: 'numeric',
-        });
-        timeFormatted = dateObj
-          .toLocaleTimeString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true,
-          })
-          .toUpperCase();
+      const dateObj = new Date(`${date}T${time}:00+05:30`);
+      if (isNaN(dateObj.getTime())) {
+        throw new HttpError(400, 'Invalid date or time format provided.');
       }
+      scheduledAt = dateObj.toISOString();
+      dateFormatted = dateObj.toLocaleDateString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+      });
+      timeFormatted = dateObj
+        .toLocaleTimeString('en-IN', {
+          timeZone: 'Asia/Kolkata',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        })
+        .toUpperCase();
     }
 
     const updatedMeeting = await meetingRepo.update(meeting.id, {
@@ -458,9 +395,8 @@ router.patch(
     });
 
     if (dateFormatted && timeFormatted) {
-      const recipientUids = new Set<string>();
-      recipientUids.add(sr.recipientUserId);
-      const siblingRequests = statusRequestRepo.findByTask(sr.taskId);
+      const recipientUids = new Set<string>([sr.recipientUserId, ...(meeting.invitedEmployeeIds || [])]);
+      const siblingRequests = await statusRequestRepo.findByTaskInWorkspace(sr.taskId, workspaceId);
       for (const sib of siblingRequests) {
         if (sib.meetingId === meeting.id) {
           recipientUids.add(sib.recipientUserId);
@@ -470,6 +406,7 @@ router.patch(
       const tmpl = notifTemplates.meetingRescheduled(dateFormatted, timeFormatted);
       for (const uid of recipientUids) {
         await createNotification({
+          workspaceId,
           recipientUserId: uid,
           eventType: 'STATUS_REQUESTED',
           title: tmpl.title,
@@ -485,19 +422,22 @@ router.patch(
   })
 );
 
-// POST /api/admin/status-requests/:requestId/meetings/cancel (Cancel Meeting)
+// POST /api/admin/status-requests/:requestId/meetings/cancel
 router.post(
   '/status-requests/:requestId/meetings/cancel',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
     const { requestId } = req.params;
-    const sr = statusRequestRepo.findById(requestId);
+    const sr = await statusRequestRepo.findByIdInWorkspace(requestId, workspaceId);
     if (!sr) {
       res.status(404).json({ success: false, error: 'Status Request not found' });
       return;
     }
 
-    const meeting = meetingRepo.findByStatusRequest(requestId);
+    const meeting = sr.meetingId
+      ? await meetingRepo.findByIdInWorkspace(sr.meetingId, workspaceId)
+      : await meetingRepo.findByStatusRequestInWorkspace(requestId, workspaceId);
     if (!meeting) {
       res.status(404).json({ success: false, error: 'Meeting record not found' });
       return;
@@ -508,12 +448,11 @@ router.post(
       cancelledAt: new Date().toISOString(),
     });
 
-    const task = taskRepo.findById(sr.taskId);
+    const task = await taskRepo.findByIdInWorkspace(sr.taskId, workspaceId);
     const tmpl = notifTemplates.meetingCancelled(task ? task.title : 'Task');
 
-    const recipientUids = new Set<string>();
-    recipientUids.add(sr.recipientUserId);
-    const siblingRequests = statusRequestRepo.findByTask(sr.taskId);
+    const recipientUids = new Set<string>([sr.recipientUserId, ...(meeting.invitedEmployeeIds || [])]);
+    const siblingRequests = await statusRequestRepo.findByTaskInWorkspace(sr.taskId, workspaceId);
     for (const sib of siblingRequests) {
       if (sib.meetingId === meeting.id) {
         recipientUids.add(sib.recipientUserId);
@@ -522,6 +461,7 @@ router.post(
 
     for (const uid of recipientUids) {
       await createNotification({
+        workspaceId,
         recipientUserId: uid,
         eventType: 'STATUS_REQUESTED',
         title: tmpl.title,
@@ -533,56 +473,54 @@ router.post(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: req.authUser!.id,
       entityType: 'status_request',
       entityId: sr.id,
       eventType: 'STATUS_REQUEST_SENT',
-      message: `Google Meet discussion cancelled by administrator.`,
+      message: 'Google Meet discussion cancelled by administrator.',
     });
 
     res.status(200).json({ success: true, data: cancelledMeeting });
   })
 );
 
-// GET /api/status-requests/:requestId/meeting (Get meeting for admin or authorized recipient)
+// GET /api/status-requests/:requestId/meeting
 router.get(
   '/status-requests/:requestId/meeting',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const { requestId } = req.params;
-    const sr = statusRequestRepo.findById(requestId);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
 
+    // Premium subscription gate for Google Meet viewing/joining
+    assertEntitlement(await canJoinPremiumMeeting(user, workspaceId));
+
+    const { requestId } = req.params;
+    const sr = await statusRequestRepo.findByIdInWorkspace(requestId, workspaceId);
     if (!sr) {
       res.status(404).json({ success: false, error: 'Status Request not found' });
       return;
     }
 
-    // Authorization check: User must be admin, the recipient employee, or an assigned task member
-    const isRecipient = sr.recipientUserId === req.session.userId;
-    const isMember = !!taskMemberRepo.findByTaskAndUser(sr.taskId, req.session.userId!);
+    const isRecipient = sr.recipientUserId === user.id;
+    const isMember = Boolean(
+      await taskMemberRepo.findByTaskAndUser(sr.taskId, user.id, workspaceId)
+    );
 
-    if (req.session.role !== 'admin' && !isRecipient && !isMember) {
+    if (user.role !== 'admin' && !isRecipient && !isMember) {
       res.status(403).json({ success: false, error: 'Unauthorized to access meeting for this request' });
       return;
     }
 
-    const task = taskRepo.findById(sr.taskId);
-
-    // Retrieve meeting using stored meetingId from task or statusRequest document, ensuring consistent resolution across participants
-    // Retrieve meeting strictly associated with this statusRequest
-    let meeting: any = null;
-    if (sr.meetingId) {
-      meeting = meetingRepo.findById(sr.meetingId);
-    }
+    let meeting = sr.meetingId
+      ? await meetingRepo.findByIdInWorkspace(sr.meetingId, workspaceId)
+      : null;
     if (!meeting) {
-      meeting = meetingRepo.findByStatusRequest(requestId);
-    }
-    if (!meeting) {
-      meeting = await meetingRepo.fetchFromCloudByStatusRequest(requestId);
+      meeting = await meetingRepo.findByStatusRequestInWorkspace(requestId, workspaceId);
     }
 
-    // Hide draft meetings from non-admin employees
-    if (meeting && meeting.status === 'draft' && req.session.role !== 'admin') {
+    if (meeting && meeting.status === 'draft' && user.role !== 'admin') {
       res.json({ success: true, data: null });
       return;
     }

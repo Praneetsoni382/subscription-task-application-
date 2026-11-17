@@ -19,6 +19,7 @@ import { QueriesPage as AdminQueriesPage } from './pages/admin/QueriesPage';
 import { StatusRequestsPage } from './pages/admin/StatusRequestsPage';
 import { NotificationsPage as AdminNotificationsPage } from './pages/admin/NotificationsPage';
 import { ReportsPage } from './pages/admin/ReportsPage';
+import { SubscriptionPage } from './pages/admin/SubscriptionPage';
 
 // Employee pages
 import { EmployeeDashboard } from './pages/employee/EmployeeDashboard';
@@ -66,6 +67,7 @@ export default function App() {
               <Route path="/admin/status-requests" element={<StatusRequestsPage />} />
               <Route path="/admin/notifications" element={<AdminNotificationsPage />} />
               <Route path="/admin/reports" element={<ReportsPage />} />
+              <Route path="/admin/subscription" element={<SubscriptionPage />} />
             </Route>
 
             {/* Employee Protected Routes */}

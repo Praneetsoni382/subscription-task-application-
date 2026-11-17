@@ -1,16 +1,16 @@
 // ============================================================
-// NOTIFICATION SERVICE
+// NOTIFICATION & AUDIT SERVICE (WORKSPACE-SCOPED FIRESTORE)
 // ============================================================
 
 import {
   notificationRepo,
   auditRepo,
-  newId,
-} from '../repositories/inMemoryStore.js';
-import type { NotificationEventType, AuditEventType } from '../types/index.js';
+} from '../repositories/firestoreRepository.js';
+import type { NotificationEventType, AuditEventType, AuditEvent } from '../types/index.js';
 import { sendPushForNotification } from './pushNotificationService.js';
 
 interface NotifyOptions {
+  workspaceId: string;
   recipientUserId: string;
   eventType: NotificationEventType;
   title: string;
@@ -23,6 +23,7 @@ interface NotifyOptions {
 
 export async function createNotification(opts: NotifyOptions) {
   const notif = await notificationRepo.create({
+    workspaceId: opts.workspaceId,
     recipientUserId: opts.recipientUserId,
     eventType: opts.eventType,
     title: opts.title,
@@ -46,17 +47,20 @@ export async function createNotification(opts: NotifyOptions) {
 }
 
 interface AuditOptions {
+  workspaceId: string;
   actorUserId: string;
-  entityType: 'task' | 'user' | 'query' | 'status_request' | 'chat';
+  entityType: AuditEvent['entityType'];
   entityId: string;
   eventType: AuditEventType;
   previousState?: string | null;
   newState?: string | null;
   message: string;
+  metadata?: Record<string, unknown>;
 }
 
 export async function createAuditEvent(opts: AuditOptions) {
-  return await auditRepo.create({
+  return auditRepo.create({
+    workspaceId: opts.workspaceId,
     actorUserId: opts.actorUserId,
     entityType: opts.entityType,
     entityId: opts.entityId,
@@ -64,6 +68,7 @@ export async function createAuditEvent(opts: AuditOptions) {
     previousState: opts.previousState ?? null,
     newState: opts.newState ?? null,
     message: opts.message,
+    metadata: opts.metadata,
     createdAt: new Date().toISOString(),
   });
 }
@@ -189,4 +194,3 @@ export const notifTemplates = {
     };
   },
 };
-

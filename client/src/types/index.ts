@@ -3,6 +3,7 @@
 // ============================================================
 
 export type UserRole = 'admin' | 'employee';
+export type AccountStatus = 'active' | 'deactivated';
 export type TaskAssignmentType = 'solo' | 'group';
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
 export type TaskStatus =
@@ -56,8 +57,119 @@ export type NotificationEventType =
   | 'GROUP_READY_FOR_REVIEW'
   | 'CHAT_MESSAGE_RECEIVED';
 
+export type SubscriptionPlan = 'FREE' | 'PREMIUM';
+export type SubscriptionStatus = 'ACTIVE' | 'EXPIRED' | 'CANCELLED' | 'PENDING_PAYMENT';
+export type PeriodStatus = 'ACTIVE' | 'SCHEDULED' | 'EXPIRED' | 'CANCELLED';
+export type PaymentStatus = 'PENDING' | 'VERIFIED' | 'FAILED' | 'REFUNDED';
+
+export interface Workspace {
+  id: string;
+  name: string;
+  ownerUid: string;
+  status: 'active' | 'suspended';
+  subscriptionId: string;
+  timezone: string;
+  onboardingStatus: 'pending' | 'completed';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EntitlementSummary {
+  workspaceId: string;
+  plan: SubscriptionPlan;
+  status: SubscriptionStatus;
+  isPremiumActive: boolean;
+  currentPeriodId: string | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  meetCreditLimit: number;
+  meetCreditsUsed: number;
+  meetCreditsReserved: number;
+  meetCreditsRemaining: number;
+  statusQueriesUsed: number;
+  capabilities: {
+    canCreateStatusRequest: boolean;
+    canRespondToStatusRequest: boolean;
+    canUseStatusQueries: boolean;
+    canGenerateMeet: boolean;
+    canJoinPremiumMeeting: boolean;
+    canManageSubscription: boolean;
+  };
+  serverTimeUtc: string;
+}
+
+export interface BootstrapStatus {
+  initialized: boolean;
+  requiresSetupSecret: boolean;
+  isAdminSdkConfigured: boolean;
+  firestoreConnected: boolean;
+  projectId: string;
+  databaseId: string;
+  error?: string;
+}
+
+export interface SubscriptionPeriod {
+  id: string;
+  workspaceId: string;
+  subscriptionId: string;
+  periodNumber: number;
+  plan: SubscriptionPlan;
+  startAt: string;
+  endAt: string | null;
+  durationSeconds: number;
+  paymentId: string | null;
+  meetCreditLimit: number;
+  meetCreditsUsed: number;
+  meetCreditsReserved: number;
+  status: PeriodStatus;
+  createdAt: string;
+}
+
+export interface SubscriptionEvent {
+  id: string;
+  workspaceId: string;
+  subscriptionId: string;
+  periodId: string | null;
+  eventType: string;
+  previousStatus: string | null;
+  newStatus: string | null;
+  paymentId: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PaymentRecord {
+  id: string;
+  workspaceId: string;
+  subscriptionId: string;
+  periodId: string | null;
+  gateway: 'RAZORPAY';
+  gatewayOrderId: string;
+  gatewayPaymentId: string | null;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  idempotencyKey: string;
+  initiatedByUid: string;
+  paidAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RazorpayConfigStatus {
+  gateway: 'RAZORPAY';
+  isGatewayConfigured: boolean;
+  isWebhookConfigured: boolean;
+  isPricingConfigured: boolean;
+  keyId: string | null;
+  amount: number | null;
+  currency: string;
+}
+
 export interface User {
   id: string;
+  uid?: string;
+  workspaceId: string;
   employeeId: string;
   fullName: string;
   email: string;
@@ -65,14 +177,15 @@ export interface User {
   designation: string;
   role: UserRole;
   active: boolean;
-  initialPassword?: string;
-  currentPasswordPlain?: string;
+  accountStatus?: AccountStatus;
+  lastLoginAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface Task {
   id: string;
+  workspaceId: string;
   referenceNumber: string;
   title: string;
   description: string;
@@ -95,6 +208,7 @@ export interface Task {
 
 export interface TaskMember {
   id: string;
+  workspaceId: string;
   taskId: string;
   userId: string;
   memberStatus: MemberStatus;
@@ -114,11 +228,13 @@ export interface TaskWithMembers extends Task {
 
 export interface StatusRequest {
   id: string;
+  workspaceId: string;
   taskId: string;
   createdBy: string;
   recipientUserId: string;
   question: string;
   status: StatusRequestStatus;
+  meetingId?: string | null;
   createdAt: string;
   responseDeadline: string | null;
   task?: { id: string; title: string; referenceNumber: string } | null;
@@ -132,14 +248,18 @@ export type MeetingStatus = 'draft' | 'scheduled' | 'cancelled';
 
 export interface Meeting {
   id: string;
+  workspaceId: string;
   statusRequestId: string;
   taskId: string;
   createdByAdminUid: string;
   googleSpaceName?: string;
   meetingUri: string;
+  meetingCode?: string;
   meetingTitle: string;
   description?: string;
   status: MeetingStatus;
+  subscriptionPeriodId?: string | null;
+  operationId?: string | null;
   createdAt: string;
   scheduledAt?: string | null;
   timezone: string;
@@ -150,6 +270,7 @@ export interface Meeting {
 
 export interface StatusResponse {
   id: string;
+  workspaceId: string;
   statusRequestId: string;
   responderUserId: string;
   responseText: string;
@@ -158,6 +279,7 @@ export interface StatusResponse {
 
 export interface Query {
   id: string;
+  workspaceId: string;
   taskId: string;
   createdBy: string;
   title: string;
@@ -174,6 +296,7 @@ export interface Query {
 
 export interface QueryMessage {
   id: string;
+  workspaceId: string;
   queryId: string;
   senderUserId: string;
   message: string;
@@ -184,6 +307,7 @@ export interface QueryMessage {
 
 export interface ChatMessage {
   id: string;
+  workspaceId: string;
   taskId: string;
   senderUserId: string;
   message: string;
@@ -194,6 +318,7 @@ export interface ChatMessage {
 
 export interface Notification {
   id: string;
+  workspaceId: string;
   recipientUserId: string;
   eventType: NotificationEventType;
   title: string;
@@ -213,6 +338,7 @@ export interface Notification {
 export interface Device {
   deviceId: string;
   userId: string;
+  workspaceId?: string;
   fcmToken: string;
   platform: 'WEB';
   browserName: string;
@@ -250,6 +376,7 @@ export interface PushConfig {
 
 export interface AuditEvent {
   id: string;
+  workspaceId: string;
   actorUserId: string;
   actorName?: string;
   entityType: string;
@@ -289,6 +416,6 @@ export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+  code?: string;
   message?: string;
 }
-

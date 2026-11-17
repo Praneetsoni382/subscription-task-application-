@@ -7,22 +7,18 @@ async function startServer() {
   try {
     const isProduction = process.env.NODE_ENV === 'production';
     if (isProduction && fs.existsSync(distServerPath)) {
-      // Production deployment (e.g. Render after npm run build)
       await import('./server/dist/server.js');
     } else {
-      // Local development environment (via tsx + Vite middleware)
       const appModule = await import('./server/src/app.js');
-      const storeModule = await import('./server/src/repositories/inMemoryStore.js');
+      const firebaseModule = await import('./server/src/firebase.js');
       const app = appModule.default;
-      const { seedStore } = storeModule;
+      const { firebaseConfig, isAdminSdkConfigured } = firebaseModule;
 
       const { startISTClockAndScheduler, getISTClock } = await import(
         './server/src/services/istSchedulerService.js'
       );
 
-      // In AI Studio / local dev environment, dev server must always run on port 3000
       const PORT = Number(process.env.DEV_PORT || 3000);
-      await seedStore();
       startISTClockAndScheduler();
       const ist = getISTClock();
 
@@ -37,12 +33,11 @@ async function startServer() {
       app.use(vite.middlewares);
 
       app.listen(PORT, '0.0.0.0', () => {
-        console.log(`\n🚀 Task Management Platform API running on http://0.0.0.0:${PORT}`);
-        console.log(`   Health check: http://0.0.0.0:${PORT}/api/health`);
-        console.log(`   🇮🇳 IST Clock Active: ${ist.timeWithSeconds} (${ist.dateFormatted})`);
-        console.log(`\n👑 System Administrator Account:`);
-        console.log(`   Email:      admin@company.com`);
-        console.log(`   Password:   Admin@2024!\n`);
+        console.log(`\n🚀 TaskFlow Platform running on http://0.0.0.0:${PORT}`);
+        console.log(`   Health check:  http://0.0.0.0:${PORT}/api/health`);
+        console.log(`   Firebase:      ${firebaseConfig.projectId} / ${firebaseConfig.firestoreDatabaseId || '(default)'}`);
+        console.log(`   Admin SDK:     ${isAdminSdkConfigured ? 'Configured' : 'Awaiting FIREBASE_CLIENT_EMAIL & FIREBASE_PRIVATE_KEY'}`);
+        console.log(`   IST Clock:     ${ist.timeWithSeconds} (${ist.dateFormatted})\n`);
       });
     }
   } catch (err) {
@@ -52,5 +47,3 @@ async function startServer() {
 }
 
 startServer();
-
-

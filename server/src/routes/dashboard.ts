@@ -1,5 +1,5 @@
 // ============================================================
-// DASHBOARD ROUTES
+// DASHBOARD ROUTES (WORKSPACE-SCOPED ASYNC FIRESTORE)
 // ============================================================
 
 import { Router } from 'express';
@@ -10,20 +10,28 @@ import {
   queryRepo,
   statusRequestRepo,
   notificationRepo,
-} from '../repositories/inMemoryStore.js';
+} from '../repositories/firestoreRepository.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { getEntitlementForUser } from '../services/subscriptionEntitlementService.js';
+import type { Task } from '../types/index.js';
 
 const router = Router();
 
-function enrichTask(taskId: string) {
-  const task = taskRepo.findById(taskId);
-  if (!task) return null;
-  const members = taskMemberRepo.findByTask(taskId).map((tm) => {
-    const user = userRepo.findById(tm.userId);
-    const { passwordHash: _, ...safeUser } = user!;
-    return { ...tm, user: safeUser };
-  });
+async function enrichTask(task: Task) {
+  const rawMembers = await taskMemberRepo.findByTask(task.id, task.workspaceId);
+  const members = await Promise.all(
+    rawMembers.map(async (tm) => {
+      const user = await userRepo.findByIdInWorkspace(tm.userId, task.workspaceId);
+      const safeUser = user
+        ? (() => {
+            const { passwordHash: _, ...rest } = user;
+            return rest;
+          })()
+        : null;
+      return { ...tm, user: safeUser };
+    })
+  );
   return { ...task, members };
 }
 
@@ -32,7 +40,16 @@ router.get(
   '/admin',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const allTasks = taskRepo.findAll().filter((t) => t.status !== 'cancelled');
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
+    const [rawTasks, allQueries, entitlement] = await Promise.all([
+      taskRepo.findAllInWorkspace(workspaceId),
+      queryRepo.findAllInWorkspace(workspaceId),
+      getEntitlementForUser(admin),
+    ]);
+
+    const allTasks = rawTasks.filter((t) => t.status !== 'cancelled');
     const now = new Date();
 
     const totalTasks = allTasks.length;
@@ -44,73 +61,69 @@ router.get(
       (t) => t.status === 'submitted_for_review' || t.status === 'revision_requested'
     ).length;
 
-    const activeQueries = queryRepo
-      .findAll()
-      .filter((q) => q.status === 'open' || q.status === 'answered').length;
+    const activeQueriesList = allQueries.filter(
+      (q) => q.status === 'open' || q.status === 'answered'
+    );
 
-    // Recent tasks (last 5)
-    const recentTasks = allTasks
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 5)
-      .map((t) => enrichTask(t.id))
-      .filter(Boolean);
+    const recentTasks = await Promise.all(
+      [...allTasks]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 5)
+        .map((t) => enrichTask(t))
+    );
 
-    // Approaching deadlines (next 3 days)
     const in3Days = new Date();
     in3Days.setDate(in3Days.getDate() + 3);
-    const approachingDeadlines = allTasks
-      .filter((t) => {
-        const dl = new Date(t.deadline);
-        return dl >= now && dl <= in3Days && t.status !== 'approved';
-      })
-      .map((t) => enrichTask(t.id))
-      .filter(Boolean);
+    const approachingDeadlines = await Promise.all(
+      allTasks
+        .filter((t) => {
+          const dl = new Date(t.deadline);
+          return dl >= now && dl <= in3Days && t.status !== 'approved';
+        })
+        .map((t) => enrichTask(t))
+    );
 
-    // Overdue tasks
-    const overdueTasks = allTasks
-      .filter((t) => {
-        const dl = new Date(t.deadline);
-        return dl < now && t.status !== 'approved' && t.status !== 'submitted_for_review';
-      })
-      .map((t) => enrichTask(t.id))
-      .filter(Boolean);
+    const overdueTasks = await Promise.all(
+      allTasks
+        .filter((t) => {
+          const dl = new Date(t.deadline);
+          return dl < now && t.status !== 'approved' && t.status !== 'submitted_for_review';
+        })
+        .map((t) => enrichTask(t))
+    );
 
-    // Open queries
-    const openQueries = queryRepo
-      .findAll()
-      .filter((q) => q.status === 'open' || q.status === 'answered')
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 5)
-      .map((q) => {
-        const task = taskRepo.findById(q.taskId);
-        const creator = userRepo.findById(q.createdBy);
-        return {
-          ...q,
-          taskTitle: task?.title ?? '',
-          creatorName: creator?.fullName ?? '',
-        };
-      });
+    const openQueries = await Promise.all(
+      [...activeQueriesList]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 5)
+        .map(async (q) => {
+          const [task, creator] = await Promise.all([
+            taskRepo.findByIdInWorkspace(q.taskId, workspaceId),
+            userRepo.findByIdInWorkspace(q.createdBy, workspaceId),
+          ]);
+          return {
+            ...q,
+            taskTitle: task?.title ?? '',
+            creatorName: creator?.fullName ?? '',
+          };
+        })
+    );
 
-    // Recent submissions awaiting review
-    const allMembers = taskMemberRepo.findByTask('').filter(() => false); // placeholder
-    const recentSubmissions = (() => {
-      const allTaskIds = taskRepo.findAll().map((t) => t.id);
-      const result: Array<Record<string, unknown>> = [];
-      for (const taskId of allTaskIds) {
-        const members = taskMemberRepo.findByTask(taskId);
-        for (const m of members) {
-          if (m.memberStatus === 'submitted_for_review') {
-            const task = taskRepo.findById(m.taskId);
-            const user = userRepo.findById(m.userId);
-            if (task && user) {
-              const { passwordHash: _, ...safeUser } = user;
-              result.push({ ...m, task, user: safeUser });
-            }
+    const recentSubmissions: Array<Record<string, unknown>> = [];
+    for (const task of allTasks) {
+      if (recentSubmissions.length >= 5) break;
+      const members = await taskMemberRepo.findByTask(task.id, workspaceId);
+      for (const m of members) {
+        if (m.memberStatus === 'submitted_for_review') {
+          const user = await userRepo.findByIdInWorkspace(m.userId, workspaceId);
+          if (user) {
+            const { passwordHash: _, ...safeUser } = user;
+            recentSubmissions.push({ ...m, task, user: safeUser });
+            if (recentSubmissions.length >= 5) break;
           }
         }
       }
-      return result.slice(0, 5);
-    })();
+    }
 
     res.json({
       success: true,
@@ -119,12 +132,13 @@ router.get(
         completedTasks,
         pendingTasks,
         submittedForReview,
-        activeQueries,
+        activeQueries: activeQueriesList.length,
         recentTasks,
         approachingDeadlines,
         overdueTasks,
         openQueries,
         recentSubmissions,
+        entitlement,
       },
     });
   })
@@ -135,45 +149,46 @@ router.get(
   '/employee',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId!;
-    const myMembers = taskMemberRepo.findByUser(userId);
-    const myTasks = taskRepo
-      .findByMember(userId)
-      .filter((t) => t.status !== 'cancelled');
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
 
+    const [myMembers, rawMyTasks, allRequests, myQueries, recentNotifications, entitlement] =
+      await Promise.all([
+        taskMemberRepo.findByUserInWorkspace(user.id, workspaceId),
+        taskRepo.findByMemberInWorkspace(user.id, workspaceId),
+        statusRequestRepo.findByRecipientInWorkspace(user.id, workspaceId),
+        queryRepo.findByUserInWorkspace(user.id, workspaceId),
+        notificationRepo.findByRecipientInWorkspace(user.id, workspaceId),
+        getEntitlementForUser(user),
+      ]);
+
+    const myTasks = rawMyTasks.filter((t) => t.status !== 'cancelled');
     const totalAssigned = myTasks.length;
     const inProgress = myMembers.filter(
       (m) => m.memberStatus === 'in_progress' || m.memberStatus === 'blocked'
     ).length;
-    const submitted = myMembers.filter(
-      (m) => m.memberStatus === 'submitted_for_review'
-    ).length;
+    const submitted = myMembers.filter((m) => m.memberStatus === 'submitted_for_review').length;
     const approved = myMembers.filter((m) => m.memberStatus === 'approved').length;
 
-    const myTasksEnriched = myTasks
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((t) => enrichTask(t.id))
-      .filter(Boolean);
+    const myTasksEnriched = await Promise.all(
+      [...myTasks]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map((t) => enrichTask(t))
+    );
 
-    // Pending status requests
-    const pendingStatusRequests = statusRequestRepo
-      .findByRecipient(userId)
-      .filter((sr) => sr.status === 'pending')
-      .map((sr) => {
-        const task = taskRepo.findById(sr.taskId);
-        return { ...sr, task };
-      });
+    // Only expose status requests when Premium subscription is active
+    const pendingStatusRequests = entitlement.isPremiumActive
+      ? await Promise.all(
+          allRequests
+            .filter((sr) => sr.status === 'pending')
+            .map(async (sr) => {
+              const task = await taskRepo.findByIdInWorkspace(sr.taskId, workspaceId);
+              return { ...sr, task };
+            })
+        )
+      : [];
 
-    // My open queries
-    const openQueries = queryRepo
-      .findByUser(userId)
-      .filter((q) => q.status !== 'resolved')
-      .slice(0, 5);
-
-    // Recent notifications
-    const recentNotifications = notificationRepo
-      .findByRecipient(userId)
-      .slice(0, 10);
+    const openQueries = myQueries.filter((q) => q.status !== 'resolved').slice(0, 5);
 
     res.json({
       success: true,
@@ -185,7 +200,8 @@ router.get(
         myTasks: myTasksEnriched,
         pendingStatusRequests,
         openQueries,
-        recentNotifications,
+        recentNotifications: recentNotifications.slice(0, 10),
+        entitlement,
       },
     });
   })

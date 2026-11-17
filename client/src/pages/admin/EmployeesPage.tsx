@@ -198,7 +198,7 @@ export function EmployeesPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E4E8EF]">
           <div>
             <h1 className="text-xl font-bold text-[#172033]">Organizational Employees</h1>
-            <p className="text-xs text-[#667085] mt-0.5">Manage personnel profiles, roles, departments, and credentials export</p>
+            <p className="text-xs text-[#667085] mt-0.5">Manage personnel profiles, roles, departments, and directory export</p>
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <Button variant="outline" onClick={handleExportCsv} disabled={isExporting} size="sm" className="flex-1 sm:flex-initial justify-center">

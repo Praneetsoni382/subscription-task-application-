@@ -1,327 +1,608 @@
 {
   "entities": {
-    "User": {
-      "title": "User",
-      "description": "User profile with role and organizational credentials",
+    "SystemBootstrapConfig": {
+      "title": "SystemBootstrapConfig",
+      "description": "Server-only workspace bootstrap state preventing repeated initial setup",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "initialized": { "type": "boolean" },
+        "defaultWorkspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "initializedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "initialized", "defaultWorkspaceId", "ownerUid", "initializedAt"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Multi-tenant organization workspace isolating all domain records and subscriptions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "subscriptionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timezone": { "type": "string", "maxLength": 64 },
+        "onboardingStatus": { "type": "string", "enum": ["pending", "completed"] },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "name", "ownerUid", "status", "subscriptionId", "timezone", "onboardingStatus", "createdAt", "updatedAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Workspace-scoped user account with bcrypt password hash (never plaintext)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "employeeId": { "type": "string", "maxLength": 64 },
-        "name": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 128 },
         "email": { "type": "string", "format": "email", "maxLength": 128 },
-        "role": { "type": "string", "enum": ["admin", "employee"] },
         "department": { "type": "string", "maxLength": 128 },
         "designation": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["admin", "employee"] },
+        "active": { "type": "boolean" },
         "accountStatus": { "type": "string", "enum": ["active", "deactivated"] },
-        "createdAt": { "type": "string" },
-        "updatedAt": { "type": "string" },
-        "createdBy": { "type": "string", "maxLength": 128 }
+        "lastLoginAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["uid", "employeeId", "name", "email", "role", "accountStatus", "createdAt"]
+      "required": ["id", "workspaceId", "employeeId", "fullName", "email", "role", "active", "accountStatus", "createdAt", "updatedAt"]
     },
     "Task": {
       "title": "Task",
-      "description": "Organizational task assignment",
+      "description": "Workspace-isolated organizational task assignment",
       "type": "object",
       "properties": {
-        "taskId": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "referenceNumber": { "type": "string", "maxLength": 64 },
-        "title": { "type": "string", "maxLength": 256 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
         "description": { "type": "string", "maxLength": 4096 },
+        "assignmentType": { "type": "string", "enum": ["solo", "group"] },
         "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "blocked", "submitted_for_review", "revision_requested", "approved", "cancelled"] },
         "category": { "type": "string", "maxLength": 128 },
         "department": { "type": "string", "maxLength": 128 },
-        "assignmentType": { "type": "string", "enum": ["solo", "group"] },
-        "assignedBy": { "type": "string", "maxLength": 128 },
-        "assignedEmployeeIds": { "type": "array" },
-        "deadline": { "type": "string" },
-        "startDate": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "in_progress", "submitted_for_review", "approved", "cancelled"] },
-        "taskNote": { "type": "string", "maxLength": 2048 },
+        "deadline": { "type": "string", "maxLength": 64 },
+        "startDate": { "type": "string", "maxLength": 64 },
+        "timezone": { "type": "string", "maxLength": 64 },
         "reminderEnabled": { "type": "boolean" },
         "reminderTimes": { "type": "array" },
-        "timezone": { "type": "string", "maxLength": 64 },
-        "createdAt": { "type": "string" },
-        "updatedAt": { "type": "string" },
-        "cancelledAt": { "type": "string" }
+        "managerNote": { "type": "string", "maxLength": 2048 },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "cancelledAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["taskId", "title", "priority", "status", "assignmentType", "deadline", "createdAt"]
+      "required": ["id", "workspaceId", "title", "assignmentType", "priority", "status", "deadline", "createdBy", "createdAt", "updatedAt"]
     },
     "TaskMember": {
       "title": "TaskMember",
-      "description": "Individual member assignment and progress state for a task",
+      "description": "Individual member assignment and progress state within a Workspace task",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "maxLength": 128 },
-        "employeeId": { "type": "string", "maxLength": 64 },
-        "employeeName": { "type": "string", "maxLength": 128 },
-        "assignedAt": { "type": "string" },
-        "individualStatus": { "type": "string", "enum": ["pending", "in_progress", "blocked", "submitted_for_review", "revision_requested", "approved", "cancelled"] },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "memberStatus": { "type": "string", "enum": ["pending", "in_progress", "blocked", "submitted_for_review", "revision_requested", "approved"] },
         "submissionNote": { "type": "string", "maxLength": 2048 },
-        "submittedAt": { "type": "string" },
-        "lastStatusUpdatedAt": { "type": "string" },
-        "blockerDescription": { "type": "string", "maxLength": 2048 },
-        "blockerReportedAt": { "type": "string" },
-        "approvedAt": { "type": "string" },
-        "approvedBy": { "type": "string", "maxLength": 128 },
-        "revisionRequestedAt": { "type": "string" },
+        "submittedAt": { "type": "string", "maxLength": 64 },
+        "approvedAt": { "type": "string", "maxLength": 64 },
+        "revisionRequestedAt": { "type": "string", "maxLength": 64 },
         "revisionReason": { "type": "string", "maxLength": 2048 },
-        "reminderEligible": { "type": "boolean" },
-        "updatedAt": { "type": "string" }
+        "lastStatusUpdateAt": { "type": "string", "maxLength": 64 },
+        "reminderEligible": { "type": "boolean" }
       },
-      "required": ["uid", "individualStatus", "assignedAt"]
+      "required": ["id", "workspaceId", "taskId", "userId", "memberStatus", "lastStatusUpdateAt"]
     },
     "StatusRequest": {
       "title": "StatusRequest",
-      "description": "Manager-to-employee status interrogation request",
+      "description": "Premium manager-to-employee status request scoped to a Workspace",
       "type": "object",
       "properties": {
-        "requestId": { "type": "string", "maxLength": 128 },
-        "taskId": { "type": "string", "maxLength": 128 },
-        "recipientUserId": { "type": "string", "maxLength": 128 },
-        "createdBy": { "type": "string", "maxLength": 128 },
-        "question": { "type": "string", "maxLength": 2048 },
-        "requestType": { "type": "string", "maxLength": 64 },
-        "status": { "type": "string", "enum": ["pending", "responded", "closed"] },
-        "response": { "type": "string", "maxLength": 4096 },
-        "respondedAt": { "type": "string" },
-        "createdAt": { "type": "string" }
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "question": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "status": { "type": "string", "enum": ["pending", "answered"] },
+        "meetingId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "responseDeadline": { "type": "string", "maxLength": 64 }
       },
-      "required": ["requestId", "taskId", "recipientUserId", "question", "status", "createdAt"]
+      "required": ["id", "workspaceId", "taskId", "createdBy", "recipientUserId", "question", "status", "createdAt"]
+    },
+    "StatusResponse": {
+      "title": "StatusResponse",
+      "description": "Premium employee response to a manager StatusRequest",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "statusRequestId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "responderUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "responseText": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "statusRequestId", "responderUserId", "responseText", "createdAt"]
     },
     "Query": {
       "title": "Query",
-      "description": "Task-related query or question raised by an employee",
+      "description": "Workspace-scoped task query or blocker inquiry",
       "type": "object",
       "properties": {
-        "queryId": { "type": "string", "maxLength": 128 },
-        "taskId": { "type": "string", "maxLength": 128 },
-        "employeeId": { "type": "string", "maxLength": 64 },
-        "employeeName": { "type": "string", "maxLength": 128 },
-        "createdBy": { "type": "string", "maxLength": 128 },
-        "title": { "type": "string", "maxLength": 256 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdBy": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
         "description": { "type": "string", "maxLength": 4096 },
-        "category": { "type": "string", "maxLength": 128 },
-        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
-        "status": { "type": "string", "enum": ["open", "answered", "resolved"] },
-        "createdAt": { "type": "string" },
-        "updatedAt": { "type": "string" },
-        "resolvedAt": { "type": "string" },
-        "resolvedBy": { "type": "string", "maxLength": 128 }
+        "category": { "type": "string", "maxLength": 64 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "status": { "type": "string", "enum": ["open", "answered", "resolved", "reopened"] },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["queryId", "taskId", "createdBy", "title", "description", "status", "createdAt"]
+      "required": ["id", "workspaceId", "taskId", "createdBy", "title", "description", "status", "createdAt", "updatedAt"]
     },
     "QueryMessage": {
       "title": "QueryMessage",
-      "description": "Message thread entry in a query",
+      "description": "Message reply in a task query thread",
       "type": "object",
       "properties": {
-        "messageId": { "type": "string", "maxLength": 128 },
-        "queryId": { "type": "string", "maxLength": 128 },
-        "senderUid": { "type": "string", "maxLength": 128 },
-        "senderName": { "type": "string", "maxLength": 128 },
-        "senderRole": { "type": "string", "enum": ["admin", "employee"] },
-        "message": { "type": "string", "maxLength": 4096 },
-        "createdAt": { "type": "string" }
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "queryId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "createdAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["messageId", "senderUid", "senderRole", "message", "createdAt"]
+      "required": ["id", "workspaceId", "queryId", "senderUserId", "message", "createdAt"]
     },
-    "TaskMessage": {
-      "title": "TaskMessage",
-      "description": "Collaborative task chat message",
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Task team chat collaboration message",
       "type": "object",
       "properties": {
-        "messageId": { "type": "string", "maxLength": 128 },
-        "taskId": { "type": "string", "maxLength": 128 },
-        "senderUid": { "type": "string", "maxLength": 128 },
-        "senderName": { "type": "string", "maxLength": 128 },
-        "senderRole": { "type": "string", "enum": ["admin", "employee"] },
-        "message": { "type": "string", "maxLength": 4096 },
-        "createdAt": { "type": "string" }
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "createdAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["messageId", "senderUid", "senderName", "senderRole", "message", "createdAt"]
+      "required": ["id", "workspaceId", "taskId", "senderUserId", "message", "createdAt"]
     },
     "Notification": {
       "title": "Notification",
-      "description": "In-app operational alert or notification",
+      "description": "Workspace-scoped user notification and FCM delivery record",
       "type": "object",
       "properties": {
-        "notificationId": { "type": "string", "maxLength": 128 },
-        "recipientUid": { "type": "string", "maxLength": 128 },
-        "type": { "type": "string", "maxLength": 64 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "eventType": { "type": "string", "maxLength": 64 },
         "title": { "type": "string", "maxLength": 256 },
-        "message": { "type": "string", "maxLength": 2048 },
+        "body": { "type": "string", "maxLength": 2048 },
         "relatedTaskId": { "type": "string", "maxLength": 128 },
-        "relatedEntityId": { "type": "string", "maxLength": 128 },
-        "read": { "type": "boolean" },
-        "readAt": { "type": "string" },
-        "createdAt": { "type": "string" },
-        "navigationTarget": { "type": "string", "maxLength": 512 },
-        "pushStatus": { "type": "string", "enum": ["pending", "sent", "failed", "no_active_devices", "skipped"] },
-        "pushSentAt": { "type": "string" },
-        "pushErrorCode": { "type": "string", "maxLength": 256 }
+        "relatedQueryId": { "type": "string", "maxLength": 128 },
+        "relatedStatusRequestId": { "type": "string", "maxLength": 128 },
+        "readAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "deliveryState": { "type": "string", "enum": ["pending", "delivered", "read"] },
+        "navigationUrl": { "type": "string", "maxLength": 512 },
+        "pushStatus": { "type": "string", "enum": ["pending", "sent", "failed", "no_active_devices", "skipped"] }
       },
-      "required": ["notificationId", "recipientUid", "type", "title", "message", "read", "createdAt"]
+      "required": ["id", "workspaceId", "recipientUserId", "eventType", "title", "body", "createdAt", "deliveryState"]
     },
     "Device": {
       "title": "Device",
-      "description": "User registered browser/device for Web Push notifications via FCM",
+      "description": "Registered browser device for Web Push FCM delivery",
       "type": "object",
       "properties": {
-        "deviceId": { "type": "string", "maxLength": 128 },
-        "userId": { "type": "string", "maxLength": 128 },
+        "deviceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "fcmToken": { "type": "string", "maxLength": 1024 },
         "platform": { "type": "string", "enum": ["WEB"] },
         "browserName": { "type": "string", "maxLength": 64 },
         "userAgent": { "type": "string", "maxLength": 512 },
         "permissionStatus": { "type": "string", "enum": ["default", "granted", "denied"] },
         "isActive": { "type": "boolean" },
-        "createdAt": { "type": "string" },
-        "updatedAt": { "type": "string" },
-        "lastSeenAt": { "type": "string" },
-        "lastSuccessfulSendAt": { "type": "string" },
-        "lastErrorAt": { "type": "string" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "lastSeenAt": { "type": "string", "maxLength": 64 },
         "tokenVersion": { "type": "string", "maxLength": 32 }
       },
       "required": ["deviceId", "userId", "fcmToken", "platform", "isActive", "createdAt"]
     },
-    "ReminderSetting": {
-      "title": "ReminderSetting",
-      "description": "Reminder configuration preferences per user or system",
+    "PushPreferences": {
+      "title": "PushPreferences",
+      "description": "User Web Push notification category preferences",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "maxLength": 128 },
+        "workspaceId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "enabled": { "type": "boolean" },
-        "reminderTimes": { "type": "array" },
-        "timezone": { "type": "string", "maxLength": 64 },
-        "updatedAt": { "type": "string" }
+        "categories": { "type": "object" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["uid", "enabled", "timezone"]
+      "required": ["userId", "enabled", "categories", "updatedAt"]
     },
     "ReminderOccurrence": {
       "title": "ReminderOccurrence",
-      "description": "Persistent record of evaluated and triggered reminder events",
+      "description": "Server-generated IST task reminder execution log",
       "type": "object",
       "properties": {
-        "occurrenceId": { "type": "string", "maxLength": 128 },
-        "taskId": { "type": "string", "maxLength": 128 },
-        "recipientUserId": { "type": "string", "maxLength": 128 },
-        "scheduledFor": { "type": "string" },
-        "status": { "type": "string", "enum": ["pending", "delivered", "skipped"] },
-        "createdAt": { "type": "string" }
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientUserId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "scheduledSlot": { "type": "string", "maxLength": 32 },
+        "dateKey": { "type": "string", "maxLength": 32 },
+        "triggeredAt": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["dispatched", "skipped_no_pending"] }
       },
-      "required": ["occurrenceId", "taskId", "recipientUserId", "scheduledFor", "status", "createdAt"]
+      "required": ["id", "workspaceId", "taskId", "recipientUserId", "scheduledSlot", "dateKey", "triggeredAt", "status"]
     },
     "AuditEvent": {
       "title": "AuditEvent",
-      "description": "Immutable administrative and operational audit trail entry",
+      "description": "Immutable workspace audit log entry",
       "type": "object",
       "properties": {
-        "eventId": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "actorUserId": { "type": "string", "maxLength": 128 },
-        "actorRole": { "type": "string", "maxLength": 64 },
         "entityType": { "type": "string", "maxLength": 64 },
         "entityId": { "type": "string", "maxLength": 128 },
         "eventType": { "type": "string", "maxLength": 64 },
         "previousState": { "type": "string", "maxLength": 128 },
         "newState": { "type": "string", "maxLength": 128 },
         "message": { "type": "string", "maxLength": 2048 },
-        "createdAt": { "type": "string" }
+        "createdAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["eventId", "actorUserId", "entityType", "entityId", "eventType", "createdAt"]
+      "required": ["id", "workspaceId", "actorUserId", "entityType", "entityId", "eventType", "createdAt"]
     },
     "Meeting": {
       "title": "Meeting",
-      "description": "Google Meet space and scheduled meeting details associated with a Status Request",
+      "description": "Google Meet REST API v2 space associated with a Workspace Status Request",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 128 },
-        "statusRequestId": { "type": "string", "maxLength": 128 },
-        "taskId": { "type": "string", "maxLength": 128 },
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "statusRequestId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "taskId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "createdByAdminUid": { "type": "string", "maxLength": 128 },
         "googleSpaceName": { "type": "string", "maxLength": 256 },
         "meetingUri": { "type": "string", "maxLength": 1024 },
+        "meetingCode": { "type": "string", "maxLength": 64 },
         "meetingTitle": { "type": "string", "maxLength": 512 },
         "description": { "type": "string", "maxLength": 2048 },
         "status": { "type": "string", "enum": ["draft", "scheduled", "cancelled"] },
-        "createdAt": { "type": "string" },
-        "scheduledAt": { "type": "string" },
+        "subscriptionPeriodId": { "type": "string", "maxLength": 128 },
+        "operationId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "scheduledAt": { "type": "string", "maxLength": 64 },
         "timezone": { "type": "string", "maxLength": 64 },
-        "publishedAt": { "type": "string" },
-        "updatedAt": { "type": "string" },
-        "cancelledAt": { "type": "string" }
+        "publishedAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "cancelledAt": { "type": "string", "maxLength": 64 }
       },
-      "required": ["id", "statusRequestId", "taskId", "createdByAdminUid", "meetingUri", "status", "createdAt"]
+      "required": ["id", "workspaceId", "statusRequestId", "taskId", "createdByAdminUid", "meetingUri", "status", "createdAt", "updatedAt"]
+    },
+    "GoogleAuthTokens": {
+      "title": "GoogleAuthTokens",
+      "description": "Server-only AES-256-GCM encrypted Google OAuth tokens per Workspace",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "connectedByAdminUid": { "type": "string", "maxLength": 128 },
+        "encryptedAccessToken": { "type": "string", "maxLength": 4096 },
+        "encryptedRefreshToken": { "type": "string", "maxLength": 4096 },
+        "expiryDate": { "type": "number" },
+        "email": { "type": "string", "maxLength": 128 },
+        "scope": { "type": "string", "maxLength": 512 },
+        "status": { "type": "string", "enum": ["connected", "revoked", "expired"] },
+        "connectedAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["workspaceId", "connectedByAdminUid", "encryptedAccessToken", "status", "connectedAt", "updatedAt"]
+    },
+    "OAuthState": {
+      "title": "OAuthState",
+      "description": "Server-only short-lived single-use CSRF state for Google OAuth callback",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "adminUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "redirectUri": { "type": "string", "maxLength": 512 },
+        "returnTo": { "type": "string", "maxLength": 256 },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "adminUid", "redirectUri", "expiresAt", "createdAt"]
+    },
+    "Subscription": {
+      "title": "Subscription",
+      "description": "Authoritative server-managed Workspace subscription record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "plan": { "type": "string", "enum": ["FREE", "PREMIUM"] },
+        "status": { "type": "string", "enum": ["ACTIVE", "EXPIRED", "CANCELLED", "PENDING_PAYMENT"] },
+        "currentPeriodId": { "type": "string", "maxLength": 128 },
+        "currentPeriodStart": { "type": "string", "maxLength": 64 },
+        "currentPeriodEnd": { "type": "string", "maxLength": 64 },
+        "autoRenew": { "type": "boolean" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "plan", "status", "autoRenew", "createdAt", "updatedAt"]
+    },
+    "SubscriptionPeriod": {
+      "title": "SubscriptionPeriod",
+      "description": "30-day (2,592,000s) billing interval with capped 5 Meet credits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subscriptionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodNumber": { "type": "integer" },
+        "plan": { "type": "string", "enum": ["FREE", "PREMIUM"] },
+        "startAt": { "type": "string", "maxLength": 64 },
+        "endAt": { "type": "string", "maxLength": 64 },
+        "durationSeconds": { "type": "integer" },
+        "paymentId": { "type": "string", "maxLength": 128 },
+        "meetCreditLimit": { "type": "integer" },
+        "meetCreditsUsed": { "type": "integer" },
+        "meetCreditsReserved": { "type": "integer" },
+        "status": { "type": "string", "enum": ["ACTIVE", "SCHEDULED", "EXPIRED", "CANCELLED"] },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "subscriptionId", "periodNumber", "plan", "startAt", "durationSeconds", "meetCreditLimit", "status", "createdAt"]
+    },
+    "SubscriptionUsage": {
+      "title": "SubscriptionUsage",
+      "description": "Server-managed usage counters per subscription period",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subscriptionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "statusQueriesUsed": { "type": "integer" },
+        "meetCreditsUsed": { "type": "integer" },
+        "meetCreditsReserved": { "type": "integer" },
+        "meetCreditLimit": { "type": "integer" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "subscriptionId", "periodId", "statusQueriesUsed", "meetCreditsUsed", "meetCreditsReserved", "meetCreditLimit", "updatedAt"]
+    },
+    "SubscriptionEvent": {
+      "title": "SubscriptionEvent",
+      "description": "Server-only subscription lifecycle audit record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subscriptionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodId": { "type": "string", "maxLength": 128 },
+        "eventType": { "type": "string", "maxLength": 64 },
+        "previousStatus": { "type": "string", "maxLength": 64 },
+        "newStatus": { "type": "string", "maxLength": 64 },
+        "paymentId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "subscriptionId", "eventType", "createdAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Server-managed Razorpay payment order and verification status",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "subscriptionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodId": { "type": "string", "maxLength": 128 },
+        "gateway": { "type": "string", "enum": ["RAZORPAY"] },
+        "gatewayOrderId": { "type": "string", "maxLength": 128 },
+        "gatewayPaymentId": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "integer" },
+        "currency": { "type": "string", "maxLength": 16 },
+        "status": { "type": "string", "enum": ["PENDING", "VERIFIED", "FAILED", "REFUNDED"] },
+        "idempotencyKey": { "type": "string", "maxLength": 128 },
+        "initiatedByUid": { "type": "string", "maxLength": 128 },
+        "paidAt": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "subscriptionId", "gateway", "gatewayOrderId", "amount", "currency", "status", "idempotencyKey", "initiatedByUid", "createdAt", "updatedAt"]
+    },
+    "PaymentEvent": {
+      "title": "PaymentEvent",
+      "description": "Server-only idempotent Razorpay webhook and checkout verification event log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "paymentId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "gateway": { "type": "string", "enum": ["RAZORPAY"] },
+        "gatewayEventId": { "type": "string", "maxLength": 128 },
+        "eventType": { "type": "string", "maxLength": 64 },
+        "verificationStatus": { "type": "string", "enum": ["VERIFIED", "REJECTED"] },
+        "receivedAt": { "type": "string", "maxLength": 64 },
+        "processedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "paymentId", "gateway", "gatewayEventId", "eventType", "verificationStatus", "receivedAt", "processedAt"]
+    },
+    "MeetGenerationOperation": {
+      "title": "MeetGenerationOperation",
+      "description": "Server-only atomic reservation/commit/rollback record for Google Meet space generation credits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "periodId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "idempotencyKey": { "type": "string", "maxLength": 128 },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "taskId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["RESERVED", "COMMITTED", "ROLLED_BACK"] },
+        "meetingId": { "type": "string", "maxLength": 128 },
+        "errorMessage": { "type": "string", "maxLength": 512 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "workspaceId", "periodId", "idempotencyKey", "actorUid", "taskId", "status", "createdAt", "updatedAt"]
+    },
+    "ActiveSession": {
+      "title": "ActiveSession",
+      "description": "Single-device active session lock per user with 30-minute sliding inactivity expiry",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sessionId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "deviceLabel": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["ACTIVE", "EXPIRED", "REVOKED"] },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "lastActivityAt": { "type": "string", "maxLength": 64 },
+        "expiresAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "workspaceId", "sessionId", "status", "createdAt", "lastActivityAt", "expiresAt"]
     }
   },
   "firestore": {
+    "/systemConfig/{configId}": {
+      "schema": "SystemBootstrapConfig",
+      "description": "Server-only workspace bootstrap lock and configuration"
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": "Workspace",
+      "description": "Organization workspaces"
+    },
     "/users/{uid}": {
       "schema": "User",
-      "description": "User profile collection indexed by Firebase UID"
+      "description": "Workspace-scoped users indexed by UID (no plaintext passwords)"
     },
     "/users/{uid}/devices/{deviceId}": {
       "schema": "Device",
-      "description": "Registered browser device records for Web Push FCM delivery"
+      "description": "Per-user registered FCM browser devices"
+    },
+    "/users/{uid}/preferences/{prefId}": {
+      "schema": "PushPreferences",
+      "description": "Per-user push notification preferences"
     },
     "/tasks/{taskId}": {
       "schema": "Task",
-      "description": "Tasks collection containing organizational work items"
+      "description": "Workspace-scoped tasks"
     },
-    "/tasks/{taskId}/members/{uid}": {
+    "/tasks/{taskId}/members/{memberUid}": {
       "schema": "TaskMember",
-      "description": "Subcollection of assigned members with individual completion status"
+      "description": "Task member subcollection"
     },
     "/tasks/{taskId}/messages/{messageId}": {
-      "schema": "TaskMessage",
-      "description": "Subcollection for task group collaboration messages"
+      "schema": "ChatMessage",
+      "description": "Task chat messages subcollection"
+    },
+    "/taskMembers/{memberId}": {
+      "schema": "TaskMember",
+      "description": "Workspace-scoped task member state records"
     },
     "/statusRequests/{requestId}": {
       "schema": "StatusRequest",
-      "description": "Collection of status interrogations and responses"
+      "description": "Premium Workspace manager status requests"
+    },
+    "/statusResponses/{responseId}": {
+      "schema": "StatusResponse",
+      "description": "Premium Workspace employee status responses"
     },
     "/queries/{queryId}": {
       "schema": "Query",
-      "description": "Collection of employee queries and questions"
+      "description": "Workspace-scoped task queries"
     },
     "/queries/{queryId}/messages/{messageId}": {
       "schema": "QueryMessage",
-      "description": "Subcollection of message thread replies for a query"
+      "description": "Query discussion message subcollection"
     },
-    "/taskMembers/{id}": {
-      "schema": "TaskMember",
-      "description": "Task member state and progress collection"
-    },
-    "/statusResponses/{id}": {
-      "schema": "StatusRequest",
-      "description": "Collection of status interrogation responses"
-    },
-    "/queryMessages/{id}": {
+    "/queryMessages/{messageId}": {
       "schema": "QueryMessage",
-      "description": "Collection of query discussion messages"
+      "description": "Workspace-scoped query discussion messages"
     },
-    "/chatMessages/{id}": {
-      "schema": "TaskMessage",
-      "description": "Collection of task chat collaboration messages"
+    "/chatMessages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Workspace-scoped task team chat messages"
     },
     "/notifications/{notificationId}": {
       "schema": "Notification",
-      "description": "Collection of targeted user notifications"
+      "description": "Targeted user notifications"
     },
-    "/reminderSettings/{uid}": {
-      "schema": "ReminderSetting",
-      "description": "User reminder configurations"
+    "/devices/{deviceId}": {
+      "schema": "Device",
+      "description": "Top-level FCM Web Push device registrations"
+    },
+    "/pushPreferences/{uid}": {
+      "schema": "PushPreferences",
+      "description": "Top-level user push notification preferences"
     },
     "/reminderOccurrences/{occurrenceId}": {
       "schema": "ReminderOccurrence",
-      "description": "Persistent log of reminder evaluations"
+      "description": "Persistent IST reminder dispatch logs"
     },
     "/auditEvents/{eventId}": {
       "schema": "AuditEvent",
-      "description": "System-wide immutable audit trail"
+      "description": "Immutable workspace audit trail"
     },
     "/meetings/{meetingId}": {
       "schema": "Meeting",
-      "description": "Google Meet scheduled spaces associated with status requests"
+      "description": "Google Meet REST API v2 spaces linked to Status Requests"
+    },
+    "/googleAuthTokens/{workspaceId}": {
+      "schema": "GoogleAuthTokens",
+      "description": "Server-only encrypted Google Workspace OAuth tokens"
+    },
+    "/oauthStates/{stateId}": {
+      "schema": "OAuthState",
+      "description": "Server-only ephemeral OAuth CSRF states"
+    },
+    "/subscriptions/{subscriptionId}": {
+      "schema": "Subscription",
+      "description": "Authoritative server-managed Workspace subscriptions"
+    },
+    "/subscriptionPeriods/{periodId}": {
+      "schema": "SubscriptionPeriod",
+      "description": "30-day Workspace subscription billing cycles"
+    },
+    "/subscriptionUsage/{periodId}": {
+      "schema": "SubscriptionUsage",
+      "description": "Server-managed usage counters per billing cycle"
+    },
+    "/subscriptionEvents/{eventId}": {
+      "schema": "SubscriptionEvent",
+      "description": "Immutable subscription lifecycle events"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Razorpay payment orders and verified payment records"
+    },
+    "/paymentEvents/{gatewayEventId}": {
+      "schema": "PaymentEvent",
+      "description": "Idempotent payment webhook and signature verification events"
+    },
+    "/meetGenerationOperations/{operationId}": {
+      "schema": "MeetGenerationOperation",
+      "description": "Transactional Meet credit reservation and rollback ledger"
+    },
+    "/activeSessions/{uid}": {
+      "schema": "ActiveSession",
+      "description": "Single-device active session locks"
     }
   }
 }

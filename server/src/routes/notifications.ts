@@ -1,9 +1,9 @@
 // ============================================================
-// NOTIFICATION ROUTES
+// NOTIFICATION ROUTES (WORKSPACE-SCOPED ASYNC FIRESTORE)
 // ============================================================
 
 import { Router } from 'express';
-import { notificationRepo } from '../repositories/inMemoryStore.js';
+import { notificationRepo } from '../repositories/firestoreRepository.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 
@@ -14,7 +14,11 @@ router.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const notifications = notificationRepo.findByRecipient(req.session.userId!);
+    const user = req.authUser!;
+    const notifications = await notificationRepo.findByRecipientInWorkspace(
+      user.id,
+      user.workspaceId
+    );
     const unreadCount = notifications.filter((n) => !n.readAt).length;
     res.json({ success: true, data: { notifications, unreadCount } });
   })
@@ -25,13 +29,14 @@ router.patch(
   '/:id/read',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const notif = notificationRepo.findById(req.params.id);
-    if (!notif) {
+    const user = req.authUser!;
+    const notif = await notificationRepo.findById(req.params.id);
+    if (!notif || notif.workspaceId !== user.workspaceId) {
       res.status(404).json({ success: false, error: 'Notification not found' });
       return;
     }
 
-    if (notif.recipientUserId !== req.session.userId) {
+    if (notif.recipientUserId !== user.id) {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
@@ -50,10 +55,10 @@ router.post(
   '/read-all',
   requireAuth,
   asyncHandler(async (req, res) => {
-    await notificationRepo.markAllRead(req.session.userId!);
+    const user = req.authUser!;
+    await notificationRepo.markAllRead(user.id, user.workspaceId);
     res.json({ success: true, message: 'All notifications marked as read' });
   })
 );
 
 export default router;
-

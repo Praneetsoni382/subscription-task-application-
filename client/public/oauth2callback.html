@@ -41,57 +41,33 @@
     <p style="margin:0; font-size:12px; color:#667085;">Completing Google Meet API authorization...</p>
   </div>
   <script>
-    (async function() {
+    (function() {
+      const targetOrigin = window.location.origin;
       try {
-        const hash = window.location.hash || '';
         const search = window.location.search || '';
-        const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : search);
-        
-        const accessToken = params.get('access_token');
-        let email = params.get('email') || '';
+        const params = new URLSearchParams(search);
+        const connected = params.get('google_connected') === 'true';
+        const err = params.get('oauth_error') || params.get('error');
 
-        if (accessToken) {
-          if (!email) {
-            try {
-              const res = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-                headers: { Authorization: `Bearer ${accessToken}` }
-              });
-              if (res.ok) {
-                const data = await res.json();
-                email = data.email || '';
-              }
-            } catch (e) {
-              console.warn('Could not fetch userinfo in callback:', e);
-            }
-          }
-
-          const payload = {
-            type: 'GOOGLE_MEET_AUTH_SUCCESS',
-            accessToken: accessToken,
-            email: email
-          };
-
-          if (window.opener && !window.opener.closed) {
-            window.opener.postMessage(payload, '*');
+        if (connected) {
+          if (window.opener && !window.opener.closed && window.opener.location.origin === targetOrigin) {
+            window.opener.postMessage({ type: 'GOOGLE_MEET_AUTH_SUCCESS' }, targetOrigin);
             setTimeout(() => { window.close(); }, 100);
           } else {
-            sessionStorage.setItem('google_meet_access_token', accessToken);
-            if (email) sessionStorage.setItem('google_meet_email', email);
-            window.location.href = window.location.origin + '/#/admin/status-requests?google_connected=true';
+            window.location.href = targetOrigin + '/admin/status-requests?google_connected=true';
           }
         } else {
-          const err = params.get('error') || 'No access token found in response';
-          if (window.opener && !window.opener.closed) {
-            window.opener.postMessage({ type: 'GOOGLE_MEET_AUTH_ERROR', error: err }, '*');
+          const safeErr = err || 'Authorization flow did not complete via backend code exchange';
+          if (window.opener && !window.opener.closed && window.opener.location.origin === targetOrigin) {
+            window.opener.postMessage({ type: 'GOOGLE_MEET_AUTH_ERROR', error: safeErr }, targetOrigin);
             setTimeout(() => { window.close(); }, 100);
           } else {
-            window.location.href = window.location.origin + '/#/admin/status-requests?oauth_error=' + encodeURIComponent(err);
+            window.location.href = targetOrigin + '/admin/status-requests?oauth_error=' + encodeURIComponent(safeErr);
           }
         }
       } catch (err) {
-        console.error('Callback handler error:', err);
         if (window.opener && !window.opener.closed) {
-          window.opener.postMessage({ type: 'GOOGLE_MEET_AUTH_ERROR', error: String(err) }, '*');
+          window.opener.postMessage({ type: 'GOOGLE_MEET_AUTH_ERROR', error: String(err) }, targetOrigin);
           setTimeout(() => { window.close(); }, 100);
         }
       }

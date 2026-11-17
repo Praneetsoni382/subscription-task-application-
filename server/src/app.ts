@@ -7,9 +7,13 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import session from 'express-session';
+import path from 'path';
+import fs from 'fs';
 import { SESSION_SECRET } from './config.js';
+import { firebaseConfig, verifyFirestoreConnectivity } from './firebase.js';
 
 // Routes
+import bootstrapRoutes from './routes/bootstrap.js';
 import authRoutes from './routes/auth.js';
 import employeeRoutes from './routes/employees.js';
 import taskRoutes from './routes/tasks.js';
@@ -22,12 +26,13 @@ import reminderRoutes from './routes/reminders.js';
 import reportRoutes from './routes/reports.js';
 import pushRoutes from './routes/push.js';
 import meetingRoutes from './routes/meetings.js';
+import subscriptionRoutes from './routes/subscriptions.js';
+import paymentRoutes from './routes/payments.js';
 
 import { errorHandler, notFound } from './middleware/errorHandler.js';
 
 const app = express();
 
-// Enable trust proxy for reverse proxies in AI Studio environment
 app.set('trust proxy', 1);
 
 // ============================================================
@@ -48,15 +53,21 @@ app.use(
     origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-device-label'],
   })
 );
 
 app.use(morgan('dev'));
-app.use(express.json({ limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
-// Session
 app.use(
   session({
     secret: SESSION_SECRET,
@@ -67,12 +78,11 @@ app.use(
       httpOnly: true,
       secure: 'auto',
       sameSite: 'lax',
-      maxAge: 8 * 60 * 60 * 1000, // 8 hours
+      maxAge: 8 * 60 * 60 * 1000,
     },
   })
 );
 
-// Dynamically adapt cookie policy for HTTPS & cross-origin AI Studio iframe preview
 app.use((req, _res, next) => {
   if (req.session && req.session.cookie) {
     const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -88,13 +98,15 @@ app.use((req, _res, next) => {
 // HEALTH CHECK
 // ============================================================
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
+  const firestore = await verifyFirestoreConnectivity();
   res.json({
     success: true,
     status: 'ok',
     timestamp: new Date().toISOString(),
-    service: 'Task Management Platform API',
-    version: '1.0.0',
+    service: 'TaskFlow Multi-Tenant SaaS API',
+    version: '2.0.0',
+    firebase: firestore,
   });
 });
 
@@ -102,7 +114,10 @@ app.get('/api/health', (_req, res) => {
 // API ROUTES
 // ============================================================
 
+app.use('/api/bootstrap', bootstrapRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/payments', paymentRoutes);
 app.use('/api/employees', employeeRoutes);
 
 // Task-nested sub-routers
@@ -126,12 +141,10 @@ app.use('/api', meetingRoutes);
 // STATIC ASSETS & CLIENT SPA SERVING
 // ============================================================
 
-import path from 'path';
-import fs from 'fs';
-
-// Redirect any Firebase Auth handler requests to official Firebase Auth domain
 app.all('/__/auth/*', (req, res) => {
-  res.redirect(`https://gen-lang-client-0565045974.firebaseapp.com${req.originalUrl}`);
+  const authDomain =
+    firebaseConfig.authDomain || `${firebaseConfig.projectId}.firebaseapp.com`;
+  res.redirect(`https://${authDomain}${req.originalUrl}`);
 });
 
 const clientDistPath = path.resolve(process.cwd(), 'client/dist');

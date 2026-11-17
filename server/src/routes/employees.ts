@@ -1,15 +1,15 @@
 // ============================================================
-// EMPLOYEE ROUTES
+// EMPLOYEE ROUTES (WORKSPACE-SCOPED + NO PLAINTEXT PASSWORDS)
 // ============================================================
 
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { userRepo, taskRepo, taskMemberRepo, auditRepo, newId } from '../repositories/inMemoryStore.js';
+import { adminAuth } from '../firebase.js';
+import { userRepo, taskRepo, taskMemberRepo } from '../repositories/firestoreRepository.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { createAuditEvent } from '../services/notificationService.js';
-import { adminAuth } from '../firebase.js';
 
 const router = Router();
 
@@ -34,8 +34,12 @@ router.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
     const { search, department, active } = req.query;
-    let employees = userRepo.findAll().filter((u) => u.role === 'employee');
+
+    let employees = (await userRepo.findAllInWorkspace(workspaceId)).filter(
+      (u) => u.role === 'employee'
+    );
 
     if (search && typeof search === 'string') {
       const q = search.toLowerCase();
@@ -62,27 +66,24 @@ router.get(
   })
 );
 
-// GET /api/employees/export-csv (Admin ONLY)
+// GET /api/employees/export-csv (Admin ONLY — Directory metadata only, zero passwords)
 router.get(
   '/export-csv',
   requireAdmin,
-  asyncHandler(async (_req, res) => {
-    const allUsers = userRepo.findAll();
+  asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
+    const allUsers = await userRepo.findAllInWorkspace(workspaceId);
     const employees = allUsers.filter((u) => u.role === 'employee');
 
-    let csvContent = 'Employee ID,Full Name,Email,Department,Designation,Role,Initial Admin Password (Created),Current Password (Active),Status\n';
+    let csvContent = 'Employee ID,Full Name,Email,Department,Designation,Role,Status,Created At\n';
 
     for (const emp of employees) {
-      const cleanEmpId = (emp.employeeId || '001').replace(/[^a-zA-Z0-9]/g, '');
-      const initialPass = emp.initialPassword || emp.currentPasswordPlain || `Emp@${cleanEmpId}`;
-      const currentPass = emp.currentPasswordPlain || initialPass;
       const status = emp.active ? 'Active' : 'Inactive';
-
-      csvContent += `"${emp.employeeId}","${emp.fullName.replace(/"/g, '""')}","${emp.email}","${emp.department.replace(/"/g, '""')}","${(emp.designation || 'Staff').replace(/"/g, '""')}","${emp.role}","${initialPass.replace(/"/g, '""')}","${currentPass.replace(/"/g, '""')}","${status}"\n`;
+      csvContent += `"${emp.employeeId.replace(/"/g, '""')}","${emp.fullName.replace(/"/g, '""')}","${emp.email}","${emp.department.replace(/"/g, '""')}","${(emp.designation || 'Staff').replace(/"/g, '""')}","${emp.role}","${status}","${emp.createdAt}"\n`;
     }
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="taskflow_employees_credentials.csv"');
+    res.setHeader('Content-Disposition', 'attachment; filename="taskflow_employees_directory.csv"');
     res.status(200).send(csvContent);
   })
 );
@@ -92,6 +93,7 @@ router.post(
   '/',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const workspaceId = req.authUser!.workspaceId;
     const parse = createEmployeeSchema.safeParse(req.body);
     if (!parse.success) {
       res.status(400).json({ success: false, error: parse.error.errors[0].message });
@@ -99,29 +101,28 @@ router.post(
     }
 
     const { fullName, employeeId, email, department, designation, password } = parse.data;
+    const normalizedEmail = email.trim().toLowerCase();
 
-    // Check uniqueness
-    if (userRepo.findByEmail(email)) {
-      res.status(409).json({ success: false, error: 'Email already registered' });
+    if (await userRepo.findByEmail(normalizedEmail)) {
+      res.status(409).json({ success: false, error: 'Email is already registered' });
       return;
     }
-    if (userRepo.findByEmployeeId(employeeId)) {
-      res.status(409).json({ success: false, error: 'Employee ID already exists' });
+    if (await userRepo.findByEmployeeIdInWorkspace(employeeId, workspaceId)) {
+      res.status(409).json({ success: false, error: 'Employee ID already exists in this workspace' });
       return;
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 12);
     const user = await userRepo.create({
-      employeeId,
-      fullName,
-      email,
-      department,
-      designation: designation ?? '',
+      workspaceId,
+      employeeId: employeeId.trim(),
+      fullName: fullName.trim(),
+      email: normalizedEmail,
+      department: department.trim(),
+      designation: (designation ?? '').trim(),
       role: 'employee',
       active: true,
       passwordHash,
-      initialPassword: password,
-      currentPasswordPlain: password,
     });
 
     if (adminAuth) {
@@ -129,7 +130,7 @@ router.post(
         await adminAuth.createUser({
           uid: user.id,
           email: user.email,
-          password: password,
+          password,
           displayName: user.fullName,
         });
       } catch (authErr) {
@@ -138,12 +139,13 @@ router.post(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: req.authUser!.id,
       entityType: 'user',
       entityId: user.id,
       eventType: 'EMPLOYEE_CREATED',
       newState: 'active',
-      message: `Employee account created for ${fullName} (${employeeId})`,
+      message: `Employee account created for ${user.fullName} (${user.employeeId})`,
     });
 
     const { passwordHash: _, ...safeUser } = user;
@@ -156,20 +158,22 @@ router.get(
   '/:id',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const user = userRepo.findById(req.params.id);
+    const workspaceId = req.authUser!.workspaceId;
+    const user = await userRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!user || user.role !== 'employee') {
       res.status(404).json({ success: false, error: 'Employee not found' });
       return;
     }
 
-    // Employees can only view their own profile
-    if (req.session.role !== 'admin' && req.session.userId !== req.params.id) {
+    if (req.authUser!.role !== 'admin' && req.authUser!.id !== req.params.id) {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
 
-    const taskMembers = taskMemberRepo.findByUser(user.id);
-    const tasks = taskRepo.findByMember(user.id);
+    const [taskMembers, tasks] = await Promise.all([
+      taskMemberRepo.findByUserInWorkspace(user.id, workspaceId),
+      taskRepo.findByMemberInWorkspace(user.id, workspaceId),
+    ]);
 
     const { passwordHash: _, ...safeUser } = user;
     res.json({ success: true, data: { ...safeUser, tasks, taskCount: taskMembers.length } });
@@ -181,7 +185,8 @@ router.patch(
   '/:id',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const user = userRepo.findById(req.params.id);
+    const workspaceId = req.authUser!.workspaceId;
+    const user = await userRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!user || user.role !== 'employee') {
       res.status(404).json({ success: false, error: 'Employee not found' });
       return;
@@ -200,7 +205,8 @@ router.patch(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: req.authUser!.id,
       entityType: 'user',
       entityId: user.id,
       eventType: 'EMPLOYEE_UPDATED',
@@ -217,7 +223,8 @@ router.patch(
   '/:id/status',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const user = userRepo.findById(req.params.id);
+    const workspaceId = req.authUser!.workspaceId;
+    const user = await userRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!user || user.role !== 'employee') {
       res.status(404).json({ success: false, error: 'Employee not found' });
       return;
@@ -230,7 +237,10 @@ router.patch(
       return;
     }
 
-    const updated = await userRepo.update(req.params.id, { active: parse.data.active });
+    const updated = await userRepo.update(req.params.id, {
+      active: parse.data.active,
+      accountStatus: parse.data.active ? 'active' : 'deactivated',
+    });
     if (!updated) {
       res.status(500).json({ success: false, error: 'Update failed' });
       return;
@@ -238,16 +248,15 @@ router.patch(
 
     if (adminAuth) {
       try {
-        await adminAuth.updateUser(user.id, {
-          disabled: !parse.data.active,
-        });
+        await adminAuth.updateUser(user.id, { disabled: !parse.data.active });
       } catch (authErr) {
         console.warn('Firebase Auth user update notice:', authErr instanceof Error ? authErr.message : authErr);
       }
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: req.authUser!.id,
       entityType: 'user',
       entityId: user.id,
       eventType: 'EMPLOYEE_STATUS_CHANGED',
@@ -262,4 +271,3 @@ router.patch(
 );
 
 export default router;
-

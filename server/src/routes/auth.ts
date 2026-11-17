@@ -1,20 +1,37 @@
 // ============================================================
-// AUTH ROUTES
+// AUTH ROUTES (WORKSPACE-SCOPED + SINGLE-DEVICE SESSION)
 // ============================================================
 
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
-import { userRepo, deviceRepo } from '../repositories/inMemoryStore.js';
+import { adminAuth } from '../firebase.js';
+import { userRepo, deviceRepo, workspaceRepo } from '../repositories/firestoreRepository.js';
 import { requireAuth } from '../middleware/auth.js';
-import { asyncHandler } from '../middleware/errorHandler.js';
+import { asyncHandler, HttpError } from '../middleware/errorHandler.js';
+import { createAuditEvent } from '../services/notificationService.js';
+import {
+  createOrValidateSingleDeviceSession,
+  issueSignedSessionToken,
+  releaseActiveSession,
+  sanitizeDeviceLabel,
+  verifySignedSessionToken,
+} from '../services/sessionService.js';
+import { getEntitlementForUser } from '../services/subscriptionEntitlementService.js';
 
 const router = Router();
 
-const loginSchema = z.object({
-  email: z.string().email('Invalid email'),
-  password: z.string().min(1, 'Password is required'),
-});
+const loginSchema = z
+  .object({
+    email: z.string().email('Invalid email').optional(),
+    password: z.string().min(1, 'Password is required').optional(),
+    firebaseIdToken: z.string().min(1).optional(),
+    sessionId: z.string().optional(),
+  })
+  .refine(
+    (d) => Boolean(d.firebaseIdToken) || Boolean(d.email && d.password),
+    'Either email and password or a Firebase ID token is required'
+  );
 
 // POST /api/auth/login
 router.post(
@@ -26,79 +43,164 @@ router.post(
       return;
     }
 
-    const { email, password } = parse.data;
-    let user = userRepo.findByEmail(email);
-    if (!user) {
-      user = await userRepo.fetchFromCloudByEmail(email);
+    const { email, password, firebaseIdToken, sessionId } = parse.data;
+    let user = null;
+
+    if (firebaseIdToken) {
+      if (!adminAuth) {
+        throw new HttpError(
+          503,
+          'Firebase Admin Auth is not configured for ID token verification.',
+          'AUTH_UNCONFIGURED'
+        );
+      }
+      const decoded = await adminAuth.verifyIdToken(firebaseIdToken);
+      user = await userRepo.findById(decoded.uid);
+      if (!user && decoded.email) {
+        user = await userRepo.findByEmail(decoded.email);
+      }
+      if (!user) {
+        res.status(401).json({
+          success: false,
+          error:
+            'No TaskFlow Workspace account matches this Google/Firebase identity. Contact your Workspace Administrator.',
+          code: 'USER_NOT_PROVISIONED',
+        });
+        return;
+      }
+    } else if (email && password) {
+      user = await userRepo.findByEmail(email);
+      if (!user) {
+        res.status(401).json({ success: false, error: 'Invalid email or password' });
+        return;
+      }
+      if (!user.passwordHash) {
+        res.status(401).json({
+          success: false,
+          error: 'This account uses Google Sign-In. Please sign in with Google or ask your Administrator to set a password.',
+        });
+        return;
+      }
+      const passwordMatch = await bcrypt.compare(password, user.passwordHash);
+      if (!passwordMatch) {
+        res.status(401).json({ success: false, error: 'Invalid email or password' });
+        return;
+      }
     }
 
     if (!user) {
-      res.status(401).json({ success: false, error: 'Invalid email or password' });
+      res.status(401).json({ success: false, error: 'Authentication failed' });
       return;
     }
 
-    if (!user.active) {
+    if (!user.active || user.accountStatus === 'deactivated') {
       res.status(403).json({ success: false, error: 'Account is deactivated' });
       return;
     }
 
-    const passwordMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!passwordMatch) {
-      res.status(401).json({ success: false, error: 'Invalid email or password' });
-      return;
+    const headerSessionId =
+      typeof req.headers['x-session-id'] === 'string' ? req.headers['x-session-id'] : undefined;
+    const deviceLabel = sanitizeDeviceLabel(
+      typeof req.headers['x-device-label'] === 'string' ? req.headers['x-device-label'] : undefined,
+      req.headers['user-agent']
+    );
+
+    // Enforce one active session per user via Firestore transaction (throws 409 on conflict)
+    const activeSession = await createOrValidateSingleDeviceSession({
+      uid: user.id,
+      workspaceId: user.workspaceId,
+      requestedSessionId: sessionId || headerSessionId,
+      deviceLabel,
+    });
+
+    await userRepo.update(user.id, { lastLoginAt: new Date().toISOString() });
+
+    const token = issueSignedSessionToken({
+      uid: user.id,
+      workspaceId: user.workspaceId,
+      role: user.role,
+      sessionId: activeSession.sessionId,
+    });
+
+    const [workspace, entitlement] = await Promise.all([
+      workspaceRepo.findById(user.workspaceId),
+      getEntitlementForUser(user),
+    ]);
+
+    if (req.session) {
+      req.session.userId = user.id;
+      req.session.workspaceId = user.workspaceId;
+      req.session.role = user.role;
+      req.session.fullName = user.fullName;
+      req.session.sessionId = activeSession.sessionId;
     }
 
-    req.session.userId = user.id;
-    req.session.role = user.role;
-    req.session.fullName = user.fullName;
-
-    const token = Buffer.from(
-      JSON.stringify({
-        uid: user.id,
-        role: user.role,
-        exp: Date.now() + 8 * 60 * 60 * 1000,
-      })
-    ).toString('base64');
-
-    req.session.save((err) => {
-      if (err) {
-        res.status(500).json({ success: false, error: 'Failed to establish session' });
-        return;
-      }
-      const { passwordHash: _, ...safeUser } = user;
-      res.json({ success: true, data: safeUser, token });
+    const { passwordHash: _, ...safeUser } = user;
+    res.json({
+      success: true,
+      data: safeUser,
+      workspace,
+      entitlement,
+      sessionId: activeSession.sessionId,
+      token,
     });
   })
 );
 
 // POST /api/auth/logout
-router.post('/logout', (req, res) => {
-  const currentUserId = req.session?.userId;
-  const deviceId = req.body?.deviceId;
+router.post(
+  '/logout',
+  asyncHandler(async (req, res) => {
+    let uid = req.session?.userId || '';
+    let sessionId = req.session?.sessionId || '';
 
-  if (deviceId) {
-    if (currentUserId) {
-      deviceRepo.deactivateDevice(currentUserId, deviceId);
-    } else {
-      const dev = deviceRepo.findByDeviceId(deviceId);
-      if (dev) {
-        deviceRepo.deactivateDevice(dev.userId, deviceId);
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const rawToken = authHeader.slice('Bearer '.length).trim();
+      const verified = verifySignedSessionToken(rawToken);
+      if (verified) {
+        uid = verified.uid;
+        sessionId = verified.sessionId;
+      } else if (adminAuth && !uid) {
+        try {
+          const decoded = await adminAuth.verifyIdToken(rawToken);
+          const u =
+            (await userRepo.findById(decoded.uid)) ||
+            (decoded.email ? await userRepo.findByEmail(decoded.email) : null);
+          if (u) uid = u.id;
+        } catch {
+          // ignore invalid token on logout
+        }
       }
     }
-  }
 
-  req.session.destroy((err) => {
-    if (err) {
-      res.status(500).json({ success: false, error: 'Logout failed' });
-      return;
+    if (!sessionId && typeof req.headers['x-session-id'] === 'string') {
+      sessionId = req.headers['x-session-id'].trim();
+    }
+
+    const deviceId = typeof req.body?.deviceId === 'string' ? req.body.deviceId : '';
+    if (deviceId) {
+      if (uid) {
+        await deviceRepo.deactivateDevice(uid, deviceId);
+      } else {
+        const dev = await deviceRepo.findByDeviceId(deviceId);
+        if (dev) {
+          await deviceRepo.deactivateDevice(dev.userId, deviceId);
+        }
+      }
+    }
+
+    if (uid) {
+      await releaseActiveSession(uid, sessionId || undefined);
+    }
+
+    if (req.session) {
+      req.session.destroy(() => {});
     }
     res.clearCookie('tid');
     res.json({ success: true, message: 'Logged out successfully' });
-  });
-});
-
-import { adminAuth } from '../firebase.js';
-import { createAuditEvent } from '../services/notificationService.js';
+  })
+);
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Current password is required'),
@@ -117,9 +219,13 @@ router.post(
     }
 
     const { currentPassword, newPassword } = parse.data;
-    const user = userRepo.findById(req.session.userId!);
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' });
+    const user = req.authUser!;
+
+    if (!user.passwordHash) {
+      res.status(400).json({
+        success: false,
+        error: 'This account uses Google Sign-In and does not have a local password to change.',
+      });
       return;
     }
 
@@ -129,23 +235,19 @@ router.post(
       return;
     }
 
-    const newHash = await bcrypt.hash(newPassword, 10);
-    const updatedUser = await userRepo.update(user.id, {
-      passwordHash: newHash,
-      currentPasswordPlain: newPassword,
-    });
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await userRepo.update(user.id, { passwordHash: newHash });
 
     if (adminAuth) {
       try {
-        await adminAuth.updateUser(user.id, {
-          password: newPassword,
-        });
+        await adminAuth.updateUser(user.id, { password: newPassword });
       } catch (authErr) {
         console.warn('Firebase Auth password update notice:', authErr instanceof Error ? authErr.message : authErr);
       }
     }
 
     await createAuditEvent({
+      workspaceId: user.workspaceId,
       actorUserId: user.id,
       entityType: 'user',
       entityId: user.id,
@@ -162,23 +264,20 @@ router.get(
   '/me',
   requireAuth,
   asyncHandler(async (req, res) => {
-    let user = userRepo.findById(req.session.userId!);
-    if (!user) {
-      user = await userRepo.fetchFromCloudById(req.session.userId!);
-    }
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User not found' });
-      return;
-    }
-    if (!user.active) {
-      req.session.destroy(() => {});
-      res.status(403).json({ success: false, error: 'Account is deactivated' });
-      return;
-    }
+    const user = req.authUser!;
+    const [workspace, entitlement] = await Promise.all([
+      workspaceRepo.findById(user.workspaceId),
+      getEntitlementForUser(user),
+    ]);
     const { passwordHash: _, ...safeUser } = user;
-    res.json({ success: true, data: safeUser });
+    res.json({
+      success: true,
+      data: safeUser,
+      workspace,
+      entitlement,
+      sessionId: req.activeSession?.sessionId,
+    });
   })
 );
 
 export default router;
-

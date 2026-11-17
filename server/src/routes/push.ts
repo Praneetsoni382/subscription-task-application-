@@ -1,5 +1,5 @@
 // ============================================================
-// PUSH NOTIFICATION ROUTES (FCM)
+// PUSH NOTIFICATION ROUTES (FCM — WORKSPACE-SCOPED)
 // File: server/src/routes/push.ts
 // ============================================================
 
@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
-import { deviceRepo, pushPrefRepo, userRepo } from '../repositories/inMemoryStore.js';
+import { deviceRepo, pushPrefRepo } from '../repositories/firestoreRepository.js';
 import {
   checkTestPushRateLimit,
   sendTestPushToUser,
@@ -16,7 +16,6 @@ import { firebaseConfig } from '../firebase.js';
 
 const router = Router();
 
-// Validation schema for device registration
 const registerDeviceSchema = z.object({
   deviceId: z.string().min(1, 'Device ID is required').max(128),
   fcmToken: z.string().min(1, 'FCM registration token is required').max(1024),
@@ -25,7 +24,6 @@ const registerDeviceSchema = z.object({
   permissionStatus: z.enum(['default', 'granted', 'denied']).optional(),
 });
 
-// Validation schema for device updates
 const updateDeviceSchema = z.object({
   permissionStatus: z.enum(['default', 'granted', 'denied']).optional(),
   browserName: z.string().max(64).optional(),
@@ -33,7 +31,6 @@ const updateDeviceSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-// Validation schema for push preferences
 const updatePreferencesSchema = z.object({
   enabled: z.boolean().optional(),
   categories: z
@@ -48,33 +45,25 @@ const updatePreferencesSchema = z.object({
     .optional(),
 });
 
-// ============================================================
-// PUBLIC/AUTHENTICATED PUSH CONFIG
-// ============================================================
-
-// GET /api/push/config — returns public VAPID key and messaging sender ID
+// GET /api/push/config
 router.get('/config', (_req, res) => {
   const vapidKey =
     process.env.VITE_FIREBASE_VAPID_KEY ||
     process.env.FIREBASE_VAPID_KEY ||
-    ''; // Can be provided in env or configured via Firebase Console
+    '';
 
   res.json({
     success: true,
     data: {
       projectId: firebaseConfig.projectId,
-      messagingSenderId: '1088662376372',
+      messagingSenderId: firebaseConfig.messagingSenderId || '',
       vapidKey,
       isConfigured: Boolean(vapidKey && vapidKey.length > 10),
     },
   });
 });
 
-// ============================================================
-// DEVICE REGISTRATION ENDPOINTS (PROTECTED)
-// ============================================================
-
-// POST /api/push/register — Register current browser device for push notifications
+// POST /api/push/register
 router.post(
   '/register',
   requireAuth,
@@ -85,26 +74,19 @@ router.post(
       return;
     }
 
-    const userId = req.session.userId!;
-    const user = userRepo.findById(userId);
-    if (!user || !user.active) {
-      res.status(403).json({ success: false, error: 'User account is inactive or not found' });
-      return;
-    }
-
+    const user = req.authUser!;
     const { deviceId, fcmToken, browserName, userAgent, permissionStatus } = parse.data;
 
-    const registeredDevice = deviceRepo.registerDevice({
+    const registeredDevice = await deviceRepo.registerDevice({
+      workspaceId: user.workspaceId,
       deviceId,
-      userId,
+      userId: user.id,
       fcmToken,
       platform: 'WEB',
       browserName: browserName || 'Web Browser',
       userAgent: userAgent || req.headers['user-agent'] || '',
       permissionStatus: permissionStatus || 'granted',
     });
-
-    console.log(`[FCM Device Registered] User: ${user.email} (${userId}) | Device: ${deviceId}`);
 
     res.status(201).json({
       success: true,
@@ -114,21 +96,18 @@ router.post(
   })
 );
 
-// GET /api/push/devices — List active devices for authenticated user
+// GET /api/push/devices
 router.get(
   '/devices',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId!;
-    const devices = deviceRepo.findByUser(userId);
-    res.json({
-      success: true,
-      data: devices,
-    });
+    const user = req.authUser!;
+    const devices = await deviceRepo.findByUserInWorkspace(user.id, user.workspaceId);
+    res.json({ success: true, data: devices });
   })
 );
 
-// PATCH /api/push/devices/:deviceId — Update device registration metadata
+// PATCH /api/push/devices/:deviceId
 router.patch(
   '/devices/:deviceId',
   requireAuth,
@@ -139,10 +118,8 @@ router.patch(
       return;
     }
 
-    const userId = req.session.userId!;
-    const { deviceId } = req.params;
-
-    const updated = deviceRepo.updateDevice(userId, deviceId, parse.data);
+    const user = req.authUser!;
+    const updated = await deviceRepo.updateDevice(user.id, req.params.deviceId, parse.data);
     if (!updated) {
       res.status(404).json({ success: false, error: 'Device registration not found' });
       return;
@@ -152,15 +129,13 @@ router.patch(
   })
 );
 
-// DELETE /api/push/devices/:deviceId — Deactivate or unregister device
+// DELETE /api/push/devices/:deviceId
 router.delete(
   '/devices/:deviceId',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId!;
-    const { deviceId } = req.params;
-
-    const deactivated = deviceRepo.deactivateDevice(userId, deviceId);
+    const user = req.authUser!;
+    const deactivated = await deviceRepo.deactivateDevice(user.id, req.params.deviceId);
     if (!deactivated) {
       res.status(404).json({ success: false, error: 'Device registration not found' });
       return;
@@ -170,22 +145,18 @@ router.delete(
   })
 );
 
-// ============================================================
-// PUSH PREFERENCES
-// ============================================================
-
-// GET /api/push/preferences — Get current user's push preferences
+// GET /api/push/preferences
 router.get(
   '/preferences',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId!;
-    const preferences = pushPrefRepo.getPreferences(userId);
+    const user = req.authUser!;
+    const preferences = await pushPrefRepo.getPreferences(user.id, user.workspaceId);
     res.json({ success: true, data: preferences });
   })
 );
 
-// PATCH /api/push/preferences — Update user's push preferences
+// PATCH /api/push/preferences
 router.patch(
   '/preferences',
   requireAuth,
@@ -196,25 +167,19 @@ router.patch(
       return;
     }
 
-    const userId = req.session.userId!;
-    const updated = pushPrefRepo.updatePreferences(userId, parse.data);
+    const user = req.authUser!;
+    const updated = await pushPrefRepo.updatePreferences(user.id, user.workspaceId, parse.data);
     res.json({ success: true, data: updated, message: 'Preferences updated successfully' });
   })
 );
 
-// ============================================================
-// PUSH TEST ENDPOINT (RATE LIMITED)
-// ============================================================
-
-// POST /api/push/test — Send test push notification to caller's registered device(s)
+// POST /api/push/test
 router.post(
   '/test',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.session.userId!;
-
-    // Enforce rate limiting to prevent spam
-    const rateCheck = checkTestPushRateLimit(userId);
+    const user = req.authUser!;
+    const rateCheck = checkTestPushRateLimit(user.id);
     if (!rateCheck.allowed) {
       res.status(429).json({
         success: false,
@@ -223,15 +188,14 @@ router.post(
       return;
     }
 
-    const result = await sendTestPushToUser(userId);
-
+    const result = await sendTestPushToUser(user.id, user.workspaceId);
     res.json({
-      success: result.status === 'sent' || result.status === 'simulated',
+      success: result.status === 'sent',
       data: result,
       message:
-        result.status === 'sent' || result.status === 'simulated'
-          ? `Test push dispatched to ${result.deviceCount} registered device(s)!`
-          : result.error || 'Test push delivery failed',
+        result.status === 'sent'
+          ? `Test push dispatched to ${result.deviceCount} registered device(s).`
+          : result.error || 'Test push delivery could not complete.',
     });
   })
 );

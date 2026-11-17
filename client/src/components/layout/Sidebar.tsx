@@ -13,6 +13,7 @@ import {
   Briefcase,
   X,
   Menu,
+  CreditCard,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { notificationApi } from '../../services/api';
@@ -26,7 +27,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ role, isOpen = false, onClose, onToggle }: SidebarProps) {
-  const { user, logout } = useAuth();
+  const { user, workspace, entitlement, logout } = useAuth();
 
   const { data: notifData } = useQuery({
     queryKey: ['notifications'],
@@ -48,6 +49,7 @@ export function Sidebar({ role, isOpen = false, onClose, onToggle }: SidebarProp
     { to: '/admin/queries', label: 'Queries', icon: HelpCircle },
     { to: '/admin/notifications', label: 'Notifications', icon: Bell, badge: unreadCount },
     { to: '/admin/reports', label: 'Reports', icon: FileText },
+    { to: '/admin/subscription', label: 'Subscription', icon: CreditCard },
   ];
 
   const employeeLinks = [
@@ -149,6 +151,24 @@ export function Sidebar({ role, isOpen = false, onClose, onToggle }: SidebarProp
 
       {/* User Profile & Logout */}
       <div className="p-3.5 border-t border-white/10 bg-[#06152D]/80 backdrop-blur-md relative z-10 shrink-0">
+        {workspace && (
+          <div className="px-2 py-1.5 mb-2 rounded-lg bg-white/[0.05] border border-white/10 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium text-[#CBD5E1] truncate">
+              {workspace.name}
+            </span>
+            <span
+              className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
+                entitlement?.isPremiumActive
+                  ? 'bg-[#159B70]/25 text-[#34D399] border border-[#159B70]/40'
+                  : 'bg-white/10 text-[#94A3B8] border border-white/15'
+              }`}
+            >
+              {entitlement?.isPremiumActive
+                ? `PRO • ${entitlement.meetCreditsRemaining}/5`
+                : 'FREE'}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between px-2 py-1.5 mb-1.5">
           <div className="flex items-center gap-2.5 overflow-hidden">
             <div className="w-8 h-8 rounded-full bg-[#2458D3] text-white border border-blue-400/30 flex items-center justify-center text-xs font-semibold shrink-0 shadow-xs">

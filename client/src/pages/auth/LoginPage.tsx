@@ -1,32 +1,70 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Briefcase, Eye, EyeOff, ShieldCheck, UserCheck, ArrowRight, KeyRound } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Briefcase,
+  Eye,
+  EyeOff,
+  ArrowRight,
+  Building2,
+  AlertTriangle,
+  ShieldCheck,
+  UserCheck,
+  Lock,
+} from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { bootstrapApi } from '../../services/api';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
+import type { BootstrapStatus } from '../../types';
 
 export function LoginPage() {
-  const { login, user } = useAuth();
+  const { login, loginWithGoogle, bootstrapWorkspace, user } = useAuth();
   const navigate = useNavigate();
 
+  // Sign-In state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // First-time Workspace Bootstrap state
+  const [workspaceName, setWorkspaceName] = useState('');
+  const [adminFullName, setAdminFullName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [department, setDepartment] = useState('Administration');
+  const [setupSecret, setSetupSecret] = useState('');
+
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // If already authenticated on load, redirect straight to user's portal
+  const { data: bootstrapStatus, isLoading: statusLoading } = useQuery({
+    queryKey: ['bootstrap-status'],
+    queryFn: async () => {
+      const res = await bootstrapApi.getStatus();
+      return res.data?.data as BootstrapStatus;
+    },
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
+
   useEffect(() => {
-    if (user && !loading) {
+    if (user && !loading && !googleLoading) {
       navigate(user.role === 'admin' ? '/admin' : '/employee', { replace: true });
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, googleLoading, navigate]);
 
-  const doLogin = async (targetEmail: string, targetPass: string) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError(null);
+    if (!email.trim() || !password) {
+      setError('Please enter both your email address and password.');
+      return;
+    }
     try {
       setLoading(true);
-      const loggedIn = await login(targetEmail, targetPass);
+      const loggedIn = await login(email.trim(), password);
       navigate(loggedIn.role === 'admin' ? '/admin' : '/employee', { replace: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Invalid email or password';
@@ -36,125 +74,311 @@ export function LoginPage() {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email || !password) {
-      setError('Please enter both corporate email and password.');
-      return;
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    try {
+      setGoogleLoading(true);
+      const loggedIn = await loginWithGoogle();
+      navigate(loggedIn.role === 'admin' ? '/admin' : '/employee', { replace: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Google Sign-In failed';
+      setError(message);
+    } finally {
+      setGoogleLoading(false);
     }
-    await doLogin(email, password);
   };
 
-  const fillAdminCredentials = () => {
-    setEmail('admin@company.com');
-    setPassword('Admin@2024!');
+  const handleBootstrapSubmit = async (e: React.FormEvent, useGoogleAuth = false) => {
+    e.preventDefault();
     setError(null);
+    if (!workspaceName.trim() || !adminFullName.trim()) {
+      setError('Workspace Name and Administrator Full Name are required.');
+      return;
+    }
+    if (!useGoogleAuth && (!adminEmail.trim() || adminPassword.length < 8)) {
+      setError('A valid Administrator Email and Password (min 8 characters) are required.');
+      return;
+    }
+
+    try {
+      if (useGoogleAuth) {
+        setGoogleLoading(true);
+      } else {
+        setLoading(true);
+      }
+      const createdAdmin = await bootstrapWorkspace({
+        workspaceName: workspaceName.trim(),
+        adminFullName: adminFullName.trim(),
+        adminEmail: adminEmail.trim() || 'pending-google-auth@workspace.local',
+        adminPassword: useGoogleAuth ? undefined : adminPassword,
+        useGoogleAuth,
+        department: department.trim() || 'Administration',
+        setupSecret: setupSecret.trim() || undefined,
+      });
+      navigate(createdAdmin.role === 'admin' ? '/admin' : '/employee', { replace: true });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Workspace initialization failed';
+      setError(message);
+    } finally {
+      setLoading(false);
+      setGoogleLoading(false);
+    }
   };
+
+  const isFirestoreOffline =
+    bootstrapStatus && bootstrapStatus.firestoreConnected === false;
+  const needsBootstrap =
+    bootstrapStatus && bootstrapStatus.firestoreConnected && !bootstrapStatus.initialized;
 
   return (
     <div className="min-h-screen bg-[#F5F7FA] flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+      <div className="sm:mx-auto sm:w-full sm:max-w-md px-4">
         <div className="flex justify-center items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl bg-[#3157A4] flex items-center justify-center text-white shadow-md">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#2458D3] to-[#168BFF] flex items-center justify-center text-white shadow-md">
             <Briefcase size={22} />
           </div>
           <h2 className="text-2xl font-bold tracking-tight text-[#172033]">TaskFlow</h2>
         </div>
         <p className="text-center text-xs font-medium text-[#667085] tracking-wide uppercase">
-          Enterprise Task Management & Status Tracking
+          Workspace Task Operations & Subscription Platform
         </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4 sm:px-0">
         <div className="bg-white py-8 px-6 sm:px-10 shadow-sm border border-[#E4E8EF] rounded-2xl">
-          <form className="space-y-4" onSubmit={handleSubmit}>
-            {error && (
-              <div className="p-3 text-xs bg-[#FFF0F0] border border-[#F5B8B8] text-[#D64545] rounded-lg">
-                {error}
+          {statusLoading ? (
+            <div className="py-10 text-center text-xs text-[#667085]">
+              Checking workspace initialization status...
+            </div>
+          ) : isFirestoreOffline ? (
+            <div className="space-y-4">
+              <div className="p-4 rounded-xl bg-[#FFF8E7] border border-[#F5D87E] space-y-2">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#C58A20]">
+                  <AlertTriangle size={16} className="shrink-0" />
+                  <span>Backend Database Configuration Required</span>
+                </div>
+                <p className="text-xs text-[#172033] leading-relaxed">
+                  The server is running on project{' '}
+                  <span className="font-mono font-semibold">{bootstrapStatus.projectId}</span>{' '}
+                  (database <span className="font-mono font-semibold">{bootstrapStatus.databaseId}</span>),
+                  but Firebase Admin SDK credentials are not yet configured in the runtime environment.
+                </p>
+                {bootstrapStatus.error && (
+                  <p className="text-[11px] text-[#667085] font-mono break-words bg-white/70 p-2 rounded border border-[#F5D87E]/60">
+                    {bootstrapStatus.error}
+                  </p>
+                )}
               </div>
-            )}
+              <div className="p-3 rounded-xl bg-[#F8FAFD] border border-[#E4E8EF] text-[11px] text-[#667085] leading-relaxed">
+                Configure <span className="font-mono font-semibold text-[#172033]">FIREBASE_CLIENT_EMAIL</span>,{' '}
+                <span className="font-mono font-semibold text-[#172033]">FIREBASE_PRIVATE_KEY</span>, and{' '}
+                <span className="font-mono font-semibold text-[#172033]">SESSION_SECRET</span> in your server environment, then reload this page to initialize your Workspace.
+              </div>
+            </div>
+          ) : needsBootstrap ? (
+            <form className="space-y-4" onSubmit={(e) => handleBootstrapSubmit(e, false)}>
+              <div className="pb-3 border-b border-[#E4E8EF]">
+                <div className="flex items-center gap-2 text-sm font-bold text-[#172033]">
+                  <Building2 size={18} className="text-[#2458D3]" />
+                  <span>Initialize Your Workspace</span>
+                </div>
+                <p className="text-xs text-[#667085] mt-1">
+                  Create your organization Workspace and primary Administrator account. Workspaces begin on the Free plan and can upgrade to Premium anytime.
+                </p>
+              </div>
 
-            <div>
+              {error && (
+                <div className="p-3 text-xs bg-[#FFF0F0] border border-[#F5B8B8] text-[#D64545] rounded-lg">
+                  {error}
+                </div>
+              )}
+
               <Input
-                label="Corporate Email"
-                type="email"
-                placeholder="name@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
+                label="Workspace / Company Name *"
+                placeholder="e.g. Acme Engineering"
+                value={workspaceName}
+                onChange={(e) => setWorkspaceName(e.target.value)}
                 required
               />
-            </div>
 
-            <div>
-              <label className="text-sm font-medium text-[#172033] block mb-1.5">Password</label>
-              <div className="relative">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Enter your account password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-3 py-2 pr-10 text-sm text-[#172033] bg-white border border-[#E4E8EF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3157A4] focus:border-[#3157A4] transition-colors"
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Input
+                  label="Admin Full Name *"
+                  placeholder="Your full name"
+                  value={adminFullName}
+                  onChange={(e) => setAdminFullName(e.target.value)}
                   required
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-2.5 text-[#667085] hover:text-[#172033] cursor-pointer"
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+                <Input
+                  label="Department"
+                  placeholder="Administration"
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                />
               </div>
-            </div>
 
-            <Button
-              type="submit"
-              className="w-full mt-2"
-              size="lg"
-              loading={loading}
-            >
-              Sign In to Platform
-              <ArrowRight size={16} />
-            </Button>
-          </form>
+              <Input
+                label="Administrator Email *"
+                type="email"
+                placeholder="you@organization.com"
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                required
+              />
 
-          {/* Authoritative Single Administrator Credentials Box */}
-          <div className="mt-8 pt-6 border-t border-[#E4E8EF] space-y-3">
-            <div className="p-3.5 rounded-xl border border-[#B8D0F5] bg-[#F4F8FF]">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="flex items-center gap-1.5 text-xs font-semibold text-[#3157A4]">
-                  <ShieldCheck size={16} />
-                  System Administrator Login
-                </span>
-                <button
-                  type="button"
-                  onClick={fillAdminCredentials}
-                  className="text-[11px] font-semibold text-[#3157A4] hover:underline cursor-pointer flex items-center gap-1"
-                >
-                  <KeyRound size={12} />
-                  Fill Credentials
-                </button>
+              <div>
+                <label className="text-sm font-medium text-[#172033] block mb-1.5">
+                  Administrator Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Minimum 8 characters"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    className="w-full px-3 py-2 pr-10 text-sm text-[#172033] bg-white border border-[#E4E8EF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3157A4] focus:border-[#3157A4] transition-colors"
+                    minLength={8}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-[#667085] hover:text-[#172033] cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-[#172033] space-y-0.5">
-                <p>
-                  <span className="text-[#667085]">Email:</span>{' '}
-                  <span className="font-mono font-medium">admin@company.com</span>
+
+              {bootstrapStatus.requiresSetupSecret && (
+                <Input
+                  label="Bootstrap Setup Secret *"
+                  type="password"
+                  placeholder="Enter BOOTSTRAP_SETUP_SECRET"
+                  value={setupSecret}
+                  onChange={(e) => setSetupSecret(e.target.value)}
+                  required
+                />
+              )}
+
+              <Button type="submit" className="w-full mt-2" size="lg" loading={loading}>
+                Create Workspace & Admin Account
+                <ArrowRight size={16} />
+              </Button>
+
+              <div className="relative py-2">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-[#E4E8EF]" />
+                </div>
+                <div className="relative flex justify-center text-[11px]">
+                  <span className="bg-white px-2 text-[#667085]">or initialize with</span>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                loading={googleLoading}
+                onClick={(e) => handleBootstrapSubmit(e, true)}
+              >
+                Continue with Google Account
+              </Button>
+            </form>
+          ) : (
+            <>
+              <div className="pb-4 mb-4 border-b border-[#E4E8EF]">
+                <h1 className="text-lg font-bold text-[#172033]">Sign In to Workspace</h1>
+                <p className="text-xs text-[#667085] mt-0.5">
+                  Access your Workspace tasks, team communications, and notifications.
                 </p>
-                <p>
-                  <span className="text-[#667085]">Password:</span>{' '}
-                  <span className="font-mono font-medium">Admin@2024!</span>
-                </p>
               </div>
-            </div>
 
-            {/* Employee Login Information */}
-            <div className="p-3 rounded-xl border border-[#E4E8EF] bg-[#F9FAFB] flex items-start gap-2.5">
-              <UserCheck size={16} className="text-[#667085] shrink-0 mt-0.5" />
-              <p className="text-[11px] text-[#667085] leading-relaxed">
-                <span className="font-semibold text-[#172033]">Employee Accounts:</span> Created dynamically by the Administrator in the Admin Dashboard. Employees sign in using the email and password assigned to their account.
-              </p>
-            </div>
-          </div>
+              <form className="space-y-4" onSubmit={handleLoginSubmit}>
+                {error && (
+                  <div className="p-3 text-xs bg-[#FFF0F0] border border-[#F5B8B8] text-[#D64545] rounded-lg leading-relaxed">
+                    {error}
+                  </div>
+                )}
+
+                <Input
+                  label="Work Email"
+                  type="email"
+                  placeholder="name@organization.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                  required
+                />
+
+                <div>
+                  <label className="text-sm font-medium text-[#172033] block mb-1.5">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="Enter your password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
+                      className="w-full px-3 py-2 pr-10 text-sm text-[#172033] bg-white border border-[#E4E8EF] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#3157A4] focus:border-[#3157A4] transition-colors"
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-2.5 text-[#667085] hover:text-[#172033] cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                </div>
+
+                <Button type="submit" className="w-full mt-2" size="lg" loading={loading}>
+                  Sign In
+                  <ArrowRight size={16} />
+                </Button>
+              </form>
+
+              <div className="relative my-5">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-[#E4E8EF]" />
+                </div>
+                <div className="relative flex justify-center text-[11px]">
+                  <span className="bg-white px-2 text-[#667085]">or</span>
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                loading={googleLoading}
+                onClick={handleGoogleSignIn}
+              >
+                <ShieldCheck size={16} className="text-[#2458D3]" />
+                Continue with Google
+              </Button>
+
+              <div className="mt-6 pt-5 border-t border-[#E4E8EF] space-y-2.5">
+                <div className="p-3 rounded-xl border border-[#E4E8EF] bg-[#F9FAFB] flex items-start gap-2.5">
+                  <UserCheck size={15} className="text-[#667085] shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-[#667085] leading-relaxed">
+                    <span className="font-semibold text-[#172033]">Employee Access:</span>{' '}
+                    Employee accounts are provisioned by your Workspace Administrator. Use the credentials shared with you or your Workspace Google email.
+                  </p>
+                </div>
+                <div className="p-3 rounded-xl border border-[#E4E8EF] bg-[#F9FAFB] flex items-start gap-2.5">
+                  <Lock size={15} className="text-[#667085] shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-[#667085] leading-relaxed">
+                    <span className="font-semibold text-[#172033]">Single-Device Policy:</span>{' '}
+                    Each account maintains one active device session at a time. Sign out before switching devices.
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

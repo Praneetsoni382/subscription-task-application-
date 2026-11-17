@@ -4,25 +4,20 @@
 
 import { PORT } from './config.js';
 import app from './app.js';
-import { seedStore } from './repositories/inMemoryStore.js';
+import { firebaseConfig, isAdminSdkConfigured } from './firebase.js';
 import { startISTClockAndScheduler, getISTClock } from './services/istSchedulerService.js';
 
 async function start() {
   try {
-    await seedStore();
     startISTClockAndScheduler();
     const ist = getISTClock();
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`\n🚀 Task Management Platform API`);
-      console.log(`   Server running on http://localhost:${PORT}`);
-      console.log(`   Health check: http://localhost:${PORT}/api/health`);
-      console.log(`   🇮🇳 IST Clock Active: ${ist.timeWithSeconds} (${ist.dateFormatted})`);
-      console.log(`\n👑 System Administrator Account:`);
-      console.log(`   Email:      admin@company.com`);
-      console.log(`   Password:   Admin@2024!`);
-      console.log(`\n👥 Employee Accounts:`);
-      console.log(`   Create employees dynamically in the Admin Dashboard (/admin/employees)`);
-      console.log(`   Employees log in using the exact email and password assigned to them.\n`);
+      console.log(`\n🚀 TaskFlow Platform API running on http://0.0.0.0:${PORT}`);
+      console.log(`   Health check:  http://localhost:${PORT}/api/health`);
+      console.log(`   Bootstrap API: http://localhost:${PORT}/api/bootstrap/status`);
+      console.log(`   Firebase:      ${firebaseConfig.projectId} / ${firebaseConfig.firestoreDatabaseId || '(default)'}`);
+      console.log(`   Admin SDK:     ${isAdminSdkConfigured ? 'Configured with Service Account' : 'Waiting for FIREBASE_CLIENT_EMAIL & FIREBASE_PRIVATE_KEY'}`);
+      console.log(`   IST Clock:     ${ist.timeWithSeconds} (${ist.dateFormatted})\n`);
     });
   } catch (err) {
     console.error('Failed to start server:', err);
@@ -31,4 +26,3 @@ async function start() {
 }
 
 start();
-

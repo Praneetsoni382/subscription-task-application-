@@ -9,11 +9,12 @@ import {
   pushPrefRepo,
   userRepo,
   notificationRepo,
-} from '../repositories/inMemoryStore.js';
-import type { Notification, NotificationEventType } from '../types/index.js';
+} from '../repositories/firestoreRepository.js';
+import type { Notification, NotificationEventType, PushPreferences } from '../types/index.js';
 
-// Map event types to user-configurable categories
-function mapEventToCategory(eventType: NotificationEventType): keyof ReturnType<typeof pushPrefRepo.getPreferences>['categories'] {
+function mapEventToCategory(
+  eventType: NotificationEventType
+): keyof PushPreferences['categories'] {
   switch (eventType) {
     case 'TASK_ASSIGNED':
     case 'TASK_UPDATED':
@@ -45,10 +46,12 @@ function mapEventToCategory(eventType: NotificationEventType): keyof ReturnType<
   }
 }
 
-// In-memory rate limiting for test push notifications (max 5 requests per 60 seconds per user)
 const testPushTimestamps = new Map<string, number[]>();
 
-export function checkTestPushRateLimit(userId: string): { allowed: boolean; retryAfterSeconds?: number } {
+export function checkTestPushRateLimit(userId: string): {
+  allowed: boolean;
+  retryAfterSeconds?: number;
+} {
   const now = Date.now();
   const windowMs = 60_000;
   const maxRequests = 5;
@@ -68,7 +71,7 @@ export function checkTestPushRateLimit(userId: string): { allowed: boolean; retr
 
 export interface PushResult {
   attempted: boolean;
-  status: 'sent' | 'failed' | 'no_active_devices' | 'skipped' | 'simulated';
+  status: 'sent' | 'failed' | 'no_active_devices' | 'skipped' | 'unconfigured';
   recipientUserId: string;
   deviceCount: number;
   successCount: number;
@@ -76,21 +79,18 @@ export interface PushResult {
   error?: string;
 }
 
-/**
- * Send browser push notification to the recipient's active devices.
- * Always non-blocking; never throws to prevent disrupting main business flows.
- */
 export async function sendPushForNotification(notification: Notification): Promise<PushResult> {
   const recipientId = notification.recipientUserId;
 
   try {
-    // 1. Authoritative user account status verification
-    const user = userRepo.findById(recipientId);
-    if (!user || !user.active) {
-      notificationRepo.update(notification.id, {
-        pushStatus: 'skipped',
-        pushErrorCode: 'USER_INACTIVE_OR_NOT_FOUND',
-      });
+    const user = await userRepo.findById(recipientId);
+    if (!user || !user.active || user.workspaceId !== notification.workspaceId) {
+      if (!notification.id.startsWith('test-')) {
+        await notificationRepo.update(notification.id, {
+          pushStatus: 'skipped',
+          pushErrorCode: 'USER_INACTIVE_OR_NOT_FOUND',
+        });
+      }
       return {
         attempted: false,
         status: 'skipped',
@@ -102,12 +102,11 @@ export async function sendPushForNotification(notification: Notification): Promi
       };
     }
 
-    // 2. User notification preferences check
-    const prefs = pushPrefRepo.getPreferences(recipientId);
+    const prefs = await pushPrefRepo.getPreferences(recipientId, notification.workspaceId);
     if (!prefs.enabled) {
-      notificationRepo.update(notification.id, {
-        pushStatus: 'skipped',
-      });
+      if (!notification.id.startsWith('test-')) {
+        await notificationRepo.update(notification.id, { pushStatus: 'skipped' });
+      }
       return {
         attempted: false,
         status: 'skipped',
@@ -120,9 +119,9 @@ export async function sendPushForNotification(notification: Notification): Promi
 
     const category = mapEventToCategory(notification.eventType);
     if (prefs.categories && prefs.categories[category] === false) {
-      notificationRepo.update(notification.id, {
-        pushStatus: 'skipped',
-      });
+      if (!notification.id.startsWith('test-')) {
+        await notificationRepo.update(notification.id, { pushStatus: 'skipped' });
+      }
       return {
         attempted: false,
         status: 'skipped',
@@ -133,12 +132,11 @@ export async function sendPushForNotification(notification: Notification): Promi
       };
     }
 
-    // 3. Retrieve all active registered devices for this user
-    const activeDevices = deviceRepo.findActiveByUser(recipientId);
+    const activeDevices = await deviceRepo.findActiveByUser(recipientId);
     if (activeDevices.length === 0) {
-      notificationRepo.update(notification.id, {
-        pushStatus: 'no_active_devices',
-      });
+      if (!notification.id.startsWith('test-')) {
+        await notificationRepo.update(notification.id, { pushStatus: 'no_active_devices' });
+      }
       return {
         attempted: false,
         status: 'no_active_devices',
@@ -149,6 +147,27 @@ export async function sendPushForNotification(notification: Notification): Promi
       };
     }
 
+    const validDevices = activeDevices.filter((d) => d.fcmToken && d.fcmToken.length > 20);
+    if (!adminMessaging || validDevices.length === 0) {
+      if (!notification.id.startsWith('test-')) {
+        await notificationRepo.update(notification.id, {
+          pushStatus: 'skipped',
+          pushErrorCode: !adminMessaging ? 'FCM_ADMIN_UNCONFIGURED' : 'NO_VALID_TOKENS',
+        });
+      }
+      return {
+        attempted: false,
+        status: 'unconfigured',
+        recipientUserId: recipientId,
+        deviceCount: activeDevices.length,
+        successCount: 0,
+        failureCount: 0,
+        error: !adminMessaging
+          ? 'Firebase Admin Messaging is not configured with service account credentials.'
+          : 'No valid FCM tokens found.',
+      };
+    }
+
     const targetUrl = notification.navigationUrl || '/';
     const tag = notification.relatedTaskId
       ? `task-${notification.relatedTaskId}`
@@ -156,6 +175,7 @@ export async function sendPushForNotification(notification: Notification): Promi
 
     const payloadData = {
       notificationId: String(notification.id),
+      workspaceId: String(notification.workspaceId),
       eventType: String(notification.eventType),
       title: String(notification.title),
       body: String(notification.body),
@@ -166,136 +186,77 @@ export async function sendPushForNotification(notification: Notification): Promi
       timestamp: String(Date.now()),
     };
 
-    // Separate real browser FCM tokens from simulated/mock tokens
-    const realDevices = activeDevices.filter(
-      (d) => d.fcmToken && d.fcmToken.length > 30 && !d.fcmToken.startsWith('fcm-token-')
-    );
-    const simulatedDevices = activeDevices.filter(
-      (d) => !d.fcmToken || d.fcmToken.length <= 30 || d.fcmToken.startsWith('fcm-token-')
-    );
-
     const now = new Date().toISOString();
+    const tokens = validDevices.map((d) => d.fcmToken);
 
-    // Handle simulated devices immediately
-    if (simulatedDevices.length > 0) {
-      simulatedDevices.forEach((d) => {
-        deviceRepo.updateDevice(recipientId, d.deviceId, {
-          lastSuccessfulSendAt: now,
-          lastSeenAt: now,
-        });
-      });
-    }
-
-    // 5. Send real FCM tokens via Firebase Admin Messaging if available
-    if (adminMessaging && realDevices.length > 0) {
-      const realTokens = realDevices.map((d) => d.fcmToken);
-      try {
-        const response = await adminMessaging.sendEachForMulticast({
-          tokens: realTokens,
-          notification: {
-            title: notification.title,
-            body: notification.body,
-          },
+    const response = await adminMessaging.sendEachForMulticast({
+      tokens,
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
+      data: payloadData,
+      webpush: {
+        headers: {
+          Urgency: 'high',
+          TTL: '86400',
+        },
+        notification: {
+          title: notification.title,
+          body: notification.body,
+          icon: '/favicon.svg',
+          badge: '/favicon.svg',
+          tag,
           data: payloadData,
-          webpush: {
-            headers: {
-              Urgency: 'high',
-              TTL: '86400',
-            },
-            notification: {
-              title: notification.title,
-              body: notification.body,
-              icon: '/favicon.svg',
-              badge: '/favicon.svg',
-              tag,
-              data: payloadData,
-              requireInteraction: true,
-              vibrate: [200, 100, 200],
-            },
-            fcmOptions: {
-              link: targetUrl,
-            },
-          },
-        });
+          requireInteraction: true,
+          vibrate: [200, 100, 200],
+        },
+        fcmOptions: {
+          link: targetUrl,
+        },
+      },
+    });
 
-        const successCount = response.successCount;
-        const failureCount = response.failureCount;
-
-        // Inspect individual device responses
-        response.responses.forEach((resp, idx) => {
-          const device = realDevices[idx];
-          if (resp.success) {
-            deviceRepo.updateDevice(recipientId, device.deviceId, {
-              lastSuccessfulSendAt: now,
-              lastSeenAt: now,
-            });
+    await Promise.all(
+      response.responses.map(async (resp, idx) => {
+        const device = validDevices[idx];
+        if (resp.success) {
+          await deviceRepo.updateDevice(recipientId, device.deviceId, {
+            lastSuccessfulSendAt: now,
+            lastSeenAt: now,
+          });
+        } else {
+          const errCode = resp.error?.code || 'UNKNOWN_ERROR';
+          if (
+            errCode === 'messaging/invalid-registration-token' ||
+            errCode === 'messaging/registration-token-not-registered' ||
+            errCode === 'messaging/invalid-argument'
+          ) {
+            await deviceRepo.deactivateDevice(recipientId, device.deviceId);
           } else {
-            const errCode = resp.error?.code || 'UNKNOWN_ERROR';
-            console.warn(`[FCM] Send failure to device ${device.deviceId}:`, errCode);
-
-            if (
-              errCode === 'messaging/invalid-registration-token' ||
-              errCode === 'messaging/registration-token-not-registered' ||
-              errCode === 'messaging/invalid-argument'
-            ) {
-              console.log(`[FCM] Deactivating expired/invalid device token: ${device.deviceId}`);
-              deviceRepo.deactivateDevice(recipientId, device.deviceId);
-            } else {
-              deviceRepo.updateDevice(recipientId, device.deviceId, {
-                lastErrorAt: now,
-              });
-            }
+            await deviceRepo.updateDevice(recipientId, device.deviceId, {
+              lastErrorAt: now,
+            });
           }
-        });
+        }
+      })
+    );
 
-        notificationRepo.update(notification.id, {
-          pushStatus: 'sent',
-          pushSentAt: now,
-        });
-
-        return {
-          attempted: true,
-          status: 'sent',
-          recipientUserId: recipientId,
-          deviceCount: activeDevices.length,
-          successCount: successCount + simulatedDevices.length,
-          failureCount,
-        };
-      } catch (fcmError) {
-        const errorMsg = fcmError instanceof Error ? fcmError.message : String(fcmError);
-        console.warn('⚠️ FCM send notice:', errorMsg);
-
-        // Fall back to in-app notification dispatch on credential/token failure
-        notificationRepo.update(notification.id, {
-          pushStatus: 'sent',
-          pushSentAt: now,
-        });
-
-        return {
-          attempted: true,
-          status: 'simulated',
-          recipientUserId: recipientId,
-          deviceCount: activeDevices.length,
-          successCount: activeDevices.length,
-          failureCount: 0,
-        };
-      }
-    } else {
-      // All active devices are in-app / simulated
-      console.log(`[FCM Simulated Dispatch] -> User: ${recipientId} | Devices: ${activeDevices.length} | Title: "${notification.title}"`);
-      notificationRepo.update(notification.id, {
-        pushStatus: 'sent',
-        pushSentAt: now,
+    if (!notification.id.startsWith('test-')) {
+      await notificationRepo.update(notification.id, {
+        pushStatus: response.successCount > 0 ? 'sent' : 'failed',
+        pushSentAt: response.successCount > 0 ? now : undefined,
       });
-      return {
-        attempted: true,
-        status: 'simulated',
-        recipientUserId: recipientId,
-        deviceCount: activeDevices.length,
-        successCount: activeDevices.length,
-        failureCount: 0,
-      };
     }
+
+    return {
+      attempted: true,
+      status: response.successCount > 0 ? 'sent' : 'failed',
+      recipientUserId: recipientId,
+      deviceCount: validDevices.length,
+      successCount: response.successCount,
+      failureCount: response.failureCount,
+    };
   } catch (err) {
     console.error('Unhandled push notification delivery error:', err);
     return {
@@ -310,11 +271,11 @@ export async function sendPushForNotification(notification: Notification): Promi
   }
 }
 
-/**
- * Send a verification test push to all active devices of the caller
- */
-export async function sendTestPushToUser(userId: string): Promise<PushResult> {
-  const activeDevices = deviceRepo.findActiveByUser(userId);
+export async function sendTestPushToUser(
+  userId: string,
+  workspaceId: string
+): Promise<PushResult> {
+  const activeDevices = await deviceRepo.findActiveByUser(userId);
   if (activeDevices.length === 0) {
     return {
       attempted: false,
@@ -323,17 +284,18 @@ export async function sendTestPushToUser(userId: string): Promise<PushResult> {
       deviceCount: 0,
       successCount: 0,
       failureCount: 0,
-      error: 'No active registered browser push device found for this account. Please click "Enable Notifications" in your browser first.',
+      error:
+        'No active registered browser push device found for this account. Please enable notifications in your browser first.',
     };
   }
 
-  // Create mock notification for test delivery
   const testNotif: Notification = {
     id: `test-${Date.now()}`,
+    workspaceId,
     recipientUserId: userId,
     eventType: 'TASK_UPDATED',
-    title: 'TaskFlow Push Notification Verified 🚀',
-    body: 'Your device is successfully registered to receive real-time push alerts and task updates!',
+    title: 'TaskFlow Push Notification Verified',
+    body: 'Your device is successfully registered to receive real-time push alerts and task updates.',
     relatedTaskId: null,
     relatedQueryId: null,
     relatedStatusRequestId: null,

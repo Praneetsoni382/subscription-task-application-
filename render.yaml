@@ -11,23 +11,45 @@ services:
         value: production
       - key: SESSION_SECRET
         generateValue: true
+      - key: SESSION_INACTIVITY_TIMEOUT_MINUTES
+        value: "30"
+      - key: PREMIUM_PLAN_CURRENCY
+        value: INR
+      - key: PREMIUM_PLAN_AMOUNT
+        sync: false
       - key: FIREBASE_PROJECT_ID
-        value: gen-lang-client-0565045974
+        value: gen-lang-client-0707937978
       - key: FIRESTORE_DATABASE_ID
-        value: ai-studio-arihantsirtask-66d963fc-de99-4f4d-88f9-3b828d7d60d7
+        value: ai-studio-subscriptiontask-992983c8-db4b-4b78-98e3-4f6d1adf9bac
       - key: VITE_FIREBASE_PROJECT_ID
-        value: gen-lang-client-0565045974
+        value: gen-lang-client-0707937978
       - key: VITE_FIRESTORE_DATABASE_ID
-        value: ai-studio-arihantsirtask-66d963fc-de99-4f4d-88f9-3b828d7d60d7
+        value: ai-studio-subscriptiontask-992983c8-db4b-4b78-98e3-4f6d1adf9bac
       - key: VITE_FIREBASE_API_KEY
-        value: AIzaSyBZqef1J1Whtrinp7B9GHu0HTZYTp0Qy_c
+        value: AIzaSyBoXlBfQ5qwWxqt7vBtSjP04D3PAM0Kon0
       - key: VITE_FIREBASE_APP_ID
-        value: 1:1088662376372:web:5f0e30f453df09c317ece1
+        value: 1:759056051727:web:22b5ac72acb18b5a43fd7a
       - key: VITE_FIREBASE_AUTH_DOMAIN
-        value: gen-lang-client-0565045974.firebaseapp.com
+        value: gen-lang-client-0707937978.firebaseapp.com
       - key: VITE_FIREBASE_VAPID_KEY
         sync: false
       - key: FIREBASE_CLIENT_EMAIL
         sync: false
       - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: OAUTH_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: BOOTSTRAP_SETUP_SECRET
         sync: false

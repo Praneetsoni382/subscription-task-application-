@@ -9,12 +9,15 @@ import {
   Video,
   AlertTriangle,
   X,
+  Lock,
+  CreditCard,
 } from 'lucide-react';
 import { AppLayout } from '../../components/layout/AppLayout';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { PageLoader } from '../../components/ui/LoadingSpinner';
+import { useAuth } from '../../contexts/AuthContext';
 import { statusRequestApi } from '../../services/api';
 import { formatDateTime, formatRelative } from '../../utils/formatDate';
 import { GoogleMeetCard } from '../../components/meetings/GoogleMeetCard';
@@ -25,6 +28,7 @@ import type { StatusRequest } from '../../types';
 export function StatusRequestsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { entitlement } = useAuth();
   const [statusFilter, setStatusFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [googleConnectOpen, setGoogleConnectOpen] = useState(false);
@@ -33,12 +37,14 @@ export function StatusRequestsPage() {
     message: string;
   } | null>(null);
 
+  const isPremiumActive = Boolean(entitlement?.isPremiumActive);
+
   useEffect(() => {
     const { connected, error } = checkOAuthUrlParams();
     if (connected) {
       setOauthBanner({
         type: 'success',
-        message: 'Google Meet Account Connected Successfully! You can now create and schedule genuine Google Meet discussions on any status request.',
+        message: 'Workspace Google Meet Account Connected Successfully! You can now create and schedule Google Meet discussions on any status request.',
       });
       queryClient.invalidateQueries({ queryKey: ['admin-google-status'] });
       queryClient.invalidateQueries({ queryKey: ['admin-status-requests'] });
@@ -56,7 +62,8 @@ export function StatusRequestsPage() {
       const res = await statusRequestApi.getAll();
       return (res.data?.data ?? []) as StatusRequest[];
     },
-    refetchInterval: 10000,
+    enabled: isPremiumActive,
+    refetchInterval: isPremiumActive ? 10000 : false,
   });
 
   const filtered = requests.filter((r) => {
@@ -71,6 +78,36 @@ export function StatusRequestsPage() {
     }
     return true;
   });
+
+  if (!isPremiumActive) {
+    return (
+      <AppLayout title="Status Requests">
+        <div className="max-w-3xl mx-auto py-8">
+          <Card className="p-8 text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-[#FFF8E7] border border-[#F5D87E] text-[#C58A20] flex items-center justify-center mx-auto">
+              <Lock size={22} />
+            </div>
+            <div className="space-y-1.5">
+              <h2 className="text-lg font-bold text-[#172033]">
+                Status Requests & Google Meet Require Premium
+              </h2>
+              <p className="text-xs text-[#667085] max-w-md mx-auto leading-relaxed">
+                Your Workspace is currently on the{' '}
+                <span className="font-semibold text-[#172033]">{entitlement?.plan || 'FREE'}</span>{' '}
+                plan ({entitlement?.status || 'ACTIVE'}). Upgrade to the 30-day Premium plan to unlock Status Requests, Status Queries, and up to 5 Google Meet generations per billing cycle.
+              </p>
+            </div>
+            <div className="pt-2 flex justify-center">
+              <Button onClick={() => navigate('/admin/subscription')}>
+                <CreditCard size={15} />
+                Manage Subscription & Upgrade
+              </Button>
+            </div>
+          </Card>
+        </div>
+      </AppLayout>
+    );
+  }
 
   if (isLoading) {
     return (

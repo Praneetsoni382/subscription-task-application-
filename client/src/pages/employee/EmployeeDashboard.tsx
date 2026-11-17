@@ -10,11 +10,8 @@ import {
   HelpCircle,
   ArrowRight,
   MessageSquareReply,
-  Eye,
-  EyeOff,
   Key,
   ShieldCheck,
-  Lock,
 } from 'lucide-react';
 import { AppLayout } from '../../components/layout/AppLayout';
 import { Card, CardHeader, CardTitle } from '../../components/ui/Card';
@@ -39,11 +36,10 @@ import { GoogleMeetCard } from '../../components/meetings/GoogleMeetCard';
 export function EmployeeDashboard() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const { user, workspace, entitlement } = useAuth();
 
   // Password modal state
   const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [showInitialPass, setShowInitialPass] = useState(false);
 
   // Status response modal
   const [respondingTo, setRespondingTo] = useState<StatusRequest | null>(null);
@@ -110,16 +106,13 @@ export function EmployeeDashboard() {
     respondMutation.mutate({ reqId: respondingTo.id, text: responseText.trim() });
   };
 
-  const initialPasswordVal =
-    user?.initialPassword ||
-    user?.currentPasswordPlain ||
-    (user?.employeeId ? `Emp@${user.employeeId.replace(/[^a-zA-Z0-9]/g, '')}` : 'Password set by Admin');
+  const isPremiumActive = Boolean(entitlement?.isPremiumActive);
 
   return (
     <AppLayout title="Personal Work Dashboard">
       <div className="space-y-6 max-w-7xl mx-auto">
         {/* Header Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E4EBF7]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E4E8EF]">
           <div>
             <h1 className="font-heading font-semibold text-xl text-[#14213D] tracking-tight">Assigned Responsibilities & Progress</h1>
             <p className="font-sans font-normal text-xs text-[#687894] mt-0.5">
@@ -138,7 +131,7 @@ export function EmployeeDashboard() {
           </div>
         </div>
 
-        {/* Account Credentials & Real-time Security Banner */}
+        {/* Account Security Banner (Zero plaintext passwords stored or exposed) */}
         <div className="rounded-2xl bg-gradient-to-r from-[#071B3A] via-[#102A56] to-[#1E3A70] text-white p-5 shadow-md border border-[#2458D3]/30">
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div className="flex items-start gap-3.5">
@@ -146,36 +139,26 @@ export function EmployeeDashboard() {
                 <ShieldCheck size={20} />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="font-heading font-semibold text-base text-white tracking-tight">
-                    Account Security & Assigned Credentials
+                    Workspace Account & Single-Device Security
                   </h2>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#159B70]/20 text-[#34D399] border border-[#159B70]/30">
-                    Real-time Auth Sync Active
+                    Active Session Verified
                   </span>
                 </div>
                 <p className="font-sans text-xs text-[#A0B3D6] mt-0.5">
-                  Logged in as <span className="text-white font-medium">{user?.fullName}</span> ({user?.employeeId || user?.email})
+                  Signed in as <span className="text-white font-medium">{user?.fullName}</span> ({user?.employeeId || user?.email})
+                  {workspace?.name ? ` • ${workspace.name}` : ''}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end bg-white/10 backdrop-blur-md px-4 py-2.5 rounded-xl border border-white/15">
-              <div className="flex items-center gap-2">
-                <Lock size={14} className="text-[#168BFF]" />
-                <span className="text-xs text-[#CBD5E1]">Admin Created Password:</span>
-                <span className="text-xs font-mono font-semibold tracking-wider text-white">
-                  {showInitialPass ? initialPasswordVal : '••••••••••••'}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowInitialPass(!showInitialPass)}
-                className="p-1 rounded text-[#CBD5E1] hover:text-white hover:bg-white/10 transition-colors"
-                title={showInitialPass ? 'Hide password' : 'View admin registered password'}
-              >
-                {showInitialPass ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
+            <div className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3.5 py-2 rounded-xl border border-white/15 text-xs">
+              <span className="text-[#CBD5E1]">Workspace Plan:</span>
+              <span className="font-semibold text-white">
+                {isPremiumActive ? 'Premium' : 'Free'}
+              </span>
             </div>
           </div>
         </div>
@@ -230,8 +213,8 @@ export function EmployeeDashboard() {
           </div>
         </div>
 
-        {/* Action Required: Pending Status Requests from Manager */}
-        {pendingStatusRequests.length > 0 && (
+        {/* Action Required: Pending Status Requests from Manager (Premium workspaces) */}
+        {isPremiumActive && pendingStatusRequests.length > 0 && (
           <div className="p-4 bg-[#FFF8E7] border border-[#F5D87E] rounded-xl space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-xs font-bold text-[#C58A20]">

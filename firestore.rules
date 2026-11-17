@@ -2,86 +2,294 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Allow read, write for all application collections and subcollections
+    // ============================================================
+    // 0. GLOBAL DEFAULT-DENY CATCH-ALL SAFETY NET
+    // ============================================================
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
 
-    // Explicit path definitions
-    match /test/connection {
-      allow read, write: if true;
+    // ============================================================
+    // 1. GLOBAL SECURITY PRIMITIVES
+    // ============================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedSignedIn() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function callerUserPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function hasUserProfile() {
+      return isSignedIn() && exists(callerUserPath());
+    }
+
+    function callerUser() {
+      return get(callerUserPath()).data;
+    }
+
+    function isActiveUser() {
+      return hasUserProfile()
+        && callerUser().active == true
+        && callerUser().accountStatus == 'active';
+    }
+
+    function sameWorkspace(workspaceId) {
+      return isActiveUser()
+        && workspaceId is string
+        && callerUser().workspaceId == workspaceId;
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return sameWorkspace(workspaceId) && callerUser().role == 'admin';
+    }
+
+    // ============================================================
+    // 2. CONNECTIVITY PROBE
+    // ============================================================
+    match /test/{docId} {
+      allow get: if isSignedIn() && docId == 'connection';
+      allow list, create, update, delete: if false;
+    }
+
+    // ============================================================
+    // 3. SERVER-ONLY SECRETS, OAUTH TOKENS & BOOTSTRAP LOCK
+    // ============================================================
+    match /systemConfig/{configId} {
+      allow read, write: if false;
+    }
+
+    match /googleAuthTokens/{workspaceId} {
+      allow read, write: if false;
+    }
+
+    match /oauthStates/{stateId} {
+      allow read, write: if false;
+    }
+
+    // ============================================================
+    // 4. SINGLE-DEVICE SESSIONS (SERVER-WRITTEN ONLY)
+    // ============================================================
+    match /activeSessions/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
+      allow list, create, update, delete: if false;
+    }
+
+    // ============================================================
+    // 5. SUBSCRIPTIONS, USAGE, PAYMENTS & MEET LEDGER (SERVER-WRITTEN ONLY)
+    // ============================================================
+    match /subscriptions/{subscriptionId} {
+      allow get: if isValidId(subscriptionId) && sameWorkspace(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /subscriptionPeriods/{periodId} {
+      allow get: if isValidId(periodId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /subscriptionUsage/{periodId} {
+      allow get: if isValidId(periodId) && sameWorkspace(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /subscriptionEvents/{eventId} {
+      allow get: if isValidId(eventId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /paymentEvents/{gatewayEventId} {
+      allow read, write: if false;
+    }
+
+    match /meetGenerationOperations/{operationId} {
+      allow get: if isValidId(operationId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
+    }
+
+    // ============================================================
+    // 6. WORKSPACES & USERS (PII ISOLATED; PROVISIONED SERVER-SIDE)
+    // ============================================================
+    match /workspaces/{workspaceId} {
+      allow get: if isValidId(workspaceId) && sameWorkspace(workspaceId);
+      allow list, create, update, delete: if false;
     }
 
     match /users/{uid} {
-      allow read, write: if true;
+      allow get: if isValidId(uid) && isSignedIn() && (
+        request.auth.uid == uid ||
+        isWorkspaceAdmin(existing().workspaceId)
+      );
+      allow list, create, update, delete: if false;
 
       match /devices/{deviceId} {
-        allow read, write: if true;
+        allow get: if isValidId(uid) && isValidId(deviceId) && isSignedIn() && request.auth.uid == uid;
+        allow list: if isValidId(uid) && isSignedIn() && request.auth.uid == uid && resource.data.userId == request.auth.uid;
+        allow create: if isValidId(uid) && isValidId(deviceId)
+          && isVerifiedSignedIn()
+          && request.auth.uid == uid
+          && incoming().keys().hasAll(['deviceId', 'userId', 'fcmToken', 'platform', 'isActive', 'createdAt', 'updatedAt'])
+          && incoming().keys().hasOnly(['deviceId', 'workspaceId', 'userId', 'fcmToken', 'platform', 'browserName', 'userAgent', 'permissionStatus', 'isActive', 'createdAt', 'updatedAt', 'lastSeenAt', 'lastSuccessfulSendAt', 'lastErrorAt', 'tokenVersion'])
+          && incoming().deviceId == deviceId
+          && incoming().userId == request.auth.uid
+          && incoming().fcmToken is string && incoming().fcmToken.size() > 0 && incoming().fcmToken.size() <= 1024
+          && incoming().platform == 'WEB'
+          && incoming().isActive is bool;
+        allow update: if isValidId(uid) && isValidId(deviceId)
+          && isVerifiedSignedIn()
+          && request.auth.uid == uid
+          && existing().userId == request.auth.uid
+          && incoming().userId == existing().userId
+          && incoming().deviceId == existing().deviceId
+          && incoming().fcmToken is string && incoming().fcmToken.size() <= 1024
+          && incoming().diff(existing()).affectedKeys().hasOnly(['fcmToken', 'isActive', 'permissionStatus', 'lastSeenAt', 'updatedAt', 'browserName', 'userAgent']);
+        allow delete: if isValidId(uid) && isValidId(deviceId) && isSignedIn() && request.auth.uid == uid;
       }
 
       match /preferences/{prefId} {
-        allow read, write: if true;
+        allow get: if isValidId(uid) && isValidId(prefId) && isSignedIn() && request.auth.uid == uid;
+        allow list: if false;
+        allow create, update: if isValidId(uid) && isValidId(prefId)
+          && isVerifiedSignedIn()
+          && request.auth.uid == uid
+          && incoming().keys().hasAll(['userId', 'enabled', 'categories', 'updatedAt'])
+          && incoming().keys().hasOnly(['workspaceId', 'userId', 'enabled', 'categories', 'updatedAt'])
+          && incoming().userId == request.auth.uid
+          && incoming().enabled is bool
+          && incoming().categories is map;
+        allow delete: if false;
       }
     }
 
+    // ============================================================
+    // 7. WORKSPACE TASKS & MEMBERS
+    // ============================================================
     match /tasks/{taskId} {
-      allow read, write: if true;
+      allow get: if isValidId(taskId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow create, update, delete: if false;
 
       match /members/{memberUid} {
-        allow read, write: if true;
+        allow get: if isValidId(taskId) && isValidId(memberUid)
+          && sameWorkspace(get(/databases/$(database)/documents/tasks/$(taskId)).data.workspaceId);
+        allow list, create, update, delete: if false;
       }
 
       match /messages/{messageId} {
-        allow read, write: if true;
+        allow get: if isValidId(taskId) && isValidId(messageId)
+          && sameWorkspace(get(/databases/$(database)/documents/tasks/$(taskId)).data.workspaceId);
+        allow list, create, update, delete: if false;
       }
     }
 
     match /taskMembers/{memberId} {
-      allow read, write: if true;
+      allow get: if isValidId(memberId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
+    // ============================================================
+    // 8. PREMIUM STATUS REQUESTS, RESPONSES & MEETINGS
+    // ============================================================
     match /statusRequests/{requestId} {
-      allow read, write: if true;
+      allow get: if isValidId(requestId) && sameWorkspace(existing().workspaceId)
+        && (isWorkspaceAdmin(existing().workspaceId) || existing().recipientUserId == request.auth.uid);
+      allow list: if isSignedIn() && (
+        resource.data.recipientUserId == request.auth.uid ||
+        resource.data.createdBy == request.auth.uid
+      );
+      allow create, update, delete: if false;
     }
 
     match /statusResponses/{responseId} {
-      allow read, write: if true;
+      allow get: if isValidId(responseId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.responderUserId == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
+    match /meetings/{meetingId} {
+      allow get: if isValidId(meetingId) && sameWorkspace(existing().workspaceId)
+        && (isWorkspaceAdmin(existing().workspaceId) || existing().status == 'scheduled');
+      allow list, create, update, delete: if false;
+    }
+
+    // ============================================================
+    // 9. QUERIES, QUERY MESSAGES & TASK TEAM CHAT
+    // ============================================================
     match /queries/{queryId} {
-      allow read, write: if true;
+      allow get: if isValidId(queryId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow create, update, delete: if false;
 
       match /messages/{messageId} {
-        allow read, write: if true;
+        allow get: if isValidId(queryId) && isValidId(messageId)
+          && sameWorkspace(get(/databases/$(database)/documents/queries/$(queryId)).data.workspaceId);
+        allow list, create, update, delete: if false;
       }
     }
 
     match /queryMessages/{messageId} {
-      allow read, write: if true;
+      allow get: if isValidId(messageId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.senderUserId == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
     match /chatMessages/{messageId} {
-      allow read, write: if true;
+      allow get: if isValidId(messageId) && sameWorkspace(existing().workspaceId);
+      allow list: if isSignedIn() && resource.data.senderUserId == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
+    // ============================================================
+    // 10. NOTIFICATIONS, DEVICES, REMINDERS & AUDIT EVENTS
+    // ============================================================
     match /notifications/{notificationId} {
-      allow read, write: if true;
+      allow get: if isValidId(notificationId) && sameWorkspace(existing().workspaceId)
+        && existing().recipientUserId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.recipientUserId == request.auth.uid;
+      allow create, update, delete: if false;
     }
 
-    match /reminderSettings/{uid} {
-      allow read, write: if true;
+    match /devices/{deviceId} {
+      allow get: if isValidId(deviceId) && isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if false;
+    }
+
+    match /pushPreferences/{uid} {
+      allow get: if isValidId(uid) && isSignedIn() && request.auth.uid == uid;
+      allow list, create, update, delete: if false;
     }
 
     match /reminderOccurrences/{occurrenceId} {
-      allow read, write: if true;
+      allow get: if isValidId(occurrenceId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
     }
 
     match /auditEvents/{eventId} {
-      allow read, write: if true;
-    }
-
-    match /meetings/{meetingId} {
-      allow read, write: if true;
+      allow get: if isValidId(eventId) && isWorkspaceAdmin(existing().workspaceId);
+      allow list, create, update, delete: if false;
     }
   }
 }

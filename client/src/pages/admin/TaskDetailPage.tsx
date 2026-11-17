@@ -15,6 +15,8 @@ import {
   Bell,
   Video,
   AlertCircle,
+  Lock,
+  CreditCard,
 } from 'lucide-react';
 import { AppLayout } from '../../components/layout/AppLayout';
 import { Card } from '../../components/ui/Card';
@@ -23,6 +25,7 @@ import { Badge } from '../../components/ui/Badge';
 import { Modal } from '../../components/ui/Modal';
 import { Textarea } from '../../components/ui/Textarea';
 import { PageLoader } from '../../components/ui/LoadingSpinner';
+import { useAuth } from '../../contexts/AuthContext';
 import { taskApi, statusRequestApi, queryApi, chatApi, reminderApi } from '../../services/api';
 import { GoogleMeetCard } from '../../components/meetings/GoogleMeetCard';
 import { formatDate, formatDateTime, formatRelative, isOverdue } from '../../utils/formatDate';
@@ -40,6 +43,8 @@ export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { entitlement, refreshSession } = useAuth();
+  const isPremiumActive = Boolean(entitlement?.isPremiumActive);
 
   const [activeTab, setActiveTab] = useState<'members' | 'status_requests' | 'queries' | 'chat' | 'history'>('members');
 
@@ -59,7 +64,6 @@ export function TaskDetailPage() {
   const [meetTime, setMeetTime] = useState('');
   const [meetDescription, setMeetDescription] = useState('');
   const [meetModalError, setMeetModalError] = useState('');
-  const [isGeneratingMeet, setIsGeneratingMeet] = useState(false);
 
   // Chat message input
   const [chatInput, setChatInput] = useState('');
@@ -116,6 +120,7 @@ export function TaskDetailPage() {
       const res = await statusRequestApi.getPresets();
       return (res.data?.data ?? []) as string[];
     },
+    enabled: isPremiumActive,
   });
 
   // Fetch all status requests for this task
@@ -125,7 +130,7 @@ export function TaskDetailPage() {
       const res = await statusRequestApi.getAll();
       return (res.data?.data ?? []) as StatusRequest[];
     },
-    enabled: activeTab === 'status_requests',
+    enabled: activeTab === 'status_requests' && isPremiumActive,
   });
 
   const taskStatusRequests = allStatusRequests.filter((sr) => sr.taskId === id);
@@ -153,8 +158,18 @@ export function TaskDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-task-detail', id] });
       queryClient.invalidateQueries({ queryKey: ['status-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['subscription-current'] });
+      refreshSession().catch(() => {});
       setStatusReqModalOpen(false);
       setCustomQuestion('');
+      setMeetModalError('');
+    },
+    onError: (err: any) => {
+      setMeetModalError(
+        err?.response?.data?.error ||
+          err?.message ||
+          'Failed to send Status Request.'
+      );
     },
   });
 
@@ -227,33 +242,13 @@ export function TaskDetailPage() {
     setStatusReqModalOpen(true);
   };
 
-  const handleSendStatusRequest = async () => {
+  const handleSendStatusRequest = () => {
     setMeetModalError('');
     const q = customQuestion.trim() ? customQuestion.trim() : selectedQuestion;
 
-    let accessToken: string | undefined;
-
-    if (includeMeet) {
-      setIsGeneratingMeet(true);
-      try {
-        const { getGoogleMeetAccessToken } = await import(
-          '../../services/googleMeet'
-        );
-        const authData = await getGoogleMeetAccessToken(true);
-        if (!authData?.accessToken) {
-          setMeetModalError('Google Meet authorization is required to create a real Google Meet link.');
-          setIsGeneratingMeet(false);
-          return;
-        }
-        accessToken = authData.accessToken;
-      } catch (err: any) {
-        console.error('Google Meet space creation error:', err);
-        setMeetModalError(err?.message || 'Failed to create real Google Meet space.');
-        setIsGeneratingMeet(false);
-        return;
-      } finally {
-        setIsGeneratingMeet(false);
-      }
+    if (includeMeet && (!meetDate || !meetTime)) {
+      setMeetModalError('Please choose both Meeting Date (IST) and Meeting Start Time (IST).');
+      return;
     }
 
     sendStatusReqMutation.mutate({
@@ -263,7 +258,6 @@ export function TaskDetailPage() {
       meetDate: includeMeet ? meetDate : undefined,
       meetTime: includeMeet ? meetTime : undefined,
       meetDescription: includeMeet ? meetDescription : undefined,
-      accessToken,
     });
   };
 
@@ -675,9 +669,31 @@ export function TaskDetailPage() {
           </div>
         )}
 
-        {/* TAB 2: STATUS REQUESTS / INTERROGATION */}
+        {/* TAB 2: STATUS REQUESTS */}
         {activeTab === 'status_requests' && (
           <div className="space-y-4">
+            {!isPremiumActive ? (
+              <Card className="p-6 text-center space-y-3">
+                <div className="w-10 h-10 rounded-xl bg-[#FFF8E7] border border-[#F5D87E] text-[#C58A20] flex items-center justify-center mx-auto">
+                  <Lock size={18} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-[#172033]">
+                    Status Requests & Google Meet Require Premium
+                  </h3>
+                  <p className="text-xs text-[#667085] max-w-md mx-auto">
+                    Upgrade your Workspace to Premium to dispatch formal Status Requests, query employee progress, and schedule Google Meet discussions.
+                  </p>
+                </div>
+                <div className="flex justify-center">
+                  <Button size="sm" onClick={() => navigate('/admin/subscription')}>
+                    <CreditCard size={14} />
+                    Upgrade to Premium
+                  </Button>
+                </div>
+              </Card>
+            ) : (
+              <>
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-[#172033]">Interrogation & Status Requests</h3>
@@ -754,6 +770,8 @@ export function TaskDetailPage() {
                   </Card>
                 ))}
               </div>
+            )}
+              </>
             )}
           </div>
         )}
@@ -920,8 +938,8 @@ export function TaskDetailPage() {
               <Button
                 size="sm"
                 onClick={handleSendStatusRequest}
-                loading={sendStatusReqMutation.isPending || isGeneratingMeet}
-                disabled={selectedRecipients.length === 0}
+                loading={sendStatusReqMutation.isPending}
+                disabled={selectedRecipients.length === 0 || !isPremiumActive}
               >
                 Send Request
               </Button>
@@ -929,11 +947,19 @@ export function TaskDetailPage() {
           }
         >
           <div className="space-y-4">
+            {!isPremiumActive && (
+              <div className="p-3 bg-[#FFF8E7] text-[#C58A20] rounded-xl border border-[#F5D87E] text-xs flex items-center justify-between gap-2">
+                <span>Status Requests require an active Premium subscription.</span>
+                <Button size="sm" variant="outline" onClick={() => navigate('/admin/subscription')}>
+                  Upgrade
+                </Button>
+              </div>
+            )}
             {meetModalError && (
               <div className="p-3 bg-[#FFF0F0] text-[#D64545] rounded-xl border border-[#F5B8B8] text-xs flex items-start gap-2">
                 <AlertCircle size={14} className="shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <span className="font-bold block">Google Meet API Notice</span>
+                  <span className="font-bold block">Status Request / Meet Notice</span>
                   <span className="text-[11px] leading-relaxed block">{meetModalError}</span>
                 </div>
               </div>

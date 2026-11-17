@@ -1,65 +1,56 @@
-// Purge script to clear all test records and leave only single Administrator
-import { firestoreDb } from './server/dist/firebase.js';
-import { seedStore } from './server/dist/repositories/inMemoryStore.js';
-import fs from 'fs';
-import path from 'path';
+// Maintenance script to reset the Firestore database cleanly for a fresh workspace bootstrap.
+// Requires valid FIREBASE_CLIENT_EMAIL & FIREBASE_PRIVATE_KEY environment variables.
+import 'dotenv/config';
+import { requireAdminDb } from './server/dist/firebase.js';
+
+const COLLECTIONS = [
+  'systemConfig',
+  'workspaces',
+  'users',
+  'tasks',
+  'taskMembers',
+  'statusRequests',
+  'statusResponses',
+  'queries',
+  'queryMessages',
+  'chatMessages',
+  'notifications',
+  'auditEvents',
+  'meetings',
+  'reminderOccurrences',
+  'googleAuthTokens',
+  'oauthStates',
+  'devices',
+  'pushPreferences',
+  'subscriptions',
+  'subscriptionPeriods',
+  'subscriptionUsage',
+  'subscriptionEvents',
+  'payments',
+  'paymentEvents',
+  'meetGenerationOperations',
+  'activeSessions',
+];
 
 async function purgeAll() {
-  console.log('🧹 Purging all test records, tasks, queries, members, notifications, and dummy data from Firestore...');
+  const db = requireAdminDb();
+  console.log('🧹 Clearing all collections in Cloud Firestore...');
 
-  const collections = [
-    'tasks',
-    'taskMembers',
-    'statusRequests',
-    'statusResponses',
-    'queries',
-    'queryMessages',
-    'chatMessages',
-    'notifications',
-    'auditEvents',
-    'reminderOccurrences',
-  ];
-
-  for (const col of collections) {
-    try {
-      const docs = await firestoreDb.collectionGetAll(col);
-      console.log(`   Clearing collection '${col}' (${docs.length} documents)...`);
-      for (const d of docs) {
-        if (d && d.id) {
-          await firestoreDb.docDelete(col, d.id);
-        }
-      }
-    } catch (err) {
-      console.warn(`   Notice clearing ${col}:`, err);
-    }
-  }
-
-  // Purge non-admin users from Firestore
-  try {
-    const users = await firestoreDb.collectionGetAll('users');
-    console.log(`   Inspecting users (${users.length} documents)...`);
-    for (const u of users) {
-      if (u && u.email !== 'admin@company.com') {
-        console.log(`   Deleting non-admin user: ${u.email} (${u.id})`);
-        await firestoreDb.docDelete('users', u.id);
+  for (const col of COLLECTIONS) {
+    const snap = await db.collection(col).get();
+    if (!snap.empty) {
+      console.log(`   Deleting ${snap.size} document(s) from '${col}'...`);
+      for (const docSnap of snap.docs) {
+        await docSnap.ref.delete();
       }
     }
-  } catch (err) {
-    console.warn('   Notice clearing non-admin users:', err);
   }
 
-  // Clear local snapshot file
-  const dataDir = path.resolve(process.cwd(), '.data');
-  const snapshotPath = path.resolve(dataDir, 'app-store.json');
-  if (fs.existsSync(snapshotPath)) {
-    fs.unlinkSync(snapshotPath);
-    console.log('   Deleted local store snapshot file app-store.json');
-  }
-
-  // Seed fresh database with single admin
-  await seedStore(true);
-  console.log('✨ Purge complete! Database now contains only the single Administrator account (admin@company.com). Everything else is zero.');
+  console.log('✨ Database cleared. Ready for clean /api/bootstrap workspace initialization.');
   process.exit(0);
 }
 
-purgeAll();
+purgeAll().catch((err) => {
+  console.error('❌ Purge failed:', err);
+  process.exit(1);
+});

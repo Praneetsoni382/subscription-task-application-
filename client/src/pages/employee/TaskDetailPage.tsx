@@ -39,7 +39,8 @@ export function TaskDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { user } = useAuth();
+  const { user, entitlement } = useAuth();
+  const isPremiumActive = Boolean(entitlement?.isPremiumActive);
 
   // Modals
   const [blockerModalOpen, setBlockerModalOpen] = useState(false);
@@ -95,19 +96,20 @@ export function TaskDetailPage() {
     refetchInterval: 4000,
   });
 
-  // Fetch Status Requests
+  // Fetch Status Requests (Premium workspaces only)
   const { data: statusRequests = [] } = useQuery({
     queryKey: ['status-requests'],
     queryFn: async () => {
       const res = await statusRequestApi.getAll();
       return (res.data?.data ?? []) as StatusRequest[];
     },
-    refetchInterval: 10000,
+    enabled: isPremiumActive,
+    refetchInterval: isPremiumActive ? 10000 : false,
   });
 
-  const myStatusRequests = statusRequests.filter(
-    (sr) => sr.taskId === id && sr.recipientUserId === user?.id
-  );
+  const myStatusRequests = isPremiumActive
+    ? statusRequests.filter((sr) => sr.taskId === id && sr.recipientUserId === user?.id)
+    : [];
 
   // Find employee's own member record
   const myMemberRecord = task?.members.find((m) => m.userId === user?.id);

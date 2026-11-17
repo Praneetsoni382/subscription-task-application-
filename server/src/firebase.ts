@@ -1,32 +1,24 @@
 // ============================================================
-// FIREBASE FIRESTORE & AUTH INITIALIZATION (SERVER)
+// FIREBASE ADMIN SDK INITIALIZATION (AUTHORITATIVE SERVER)
 // ============================================================
 
-import { initializeApp as initializeClientApp, getApps as getClientApps } from 'firebase/app';
 import {
-  initializeFirestore as initializeClientFirestore,
-  setLogLevel,
-  doc,
-  setDoc,
-  getDoc,
-  getDocs,
-  deleteDoc,
-  collection as firestoreCollection,
-  type Firestore as ClientFirestore
-} from 'firebase/firestore';
-import { initializeApp as initializeAdminApp, getApps as getAdminApps, cert, type App } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestore, Firestore as AdminFirestore } from 'firebase-admin/firestore';
-import { getAuth, Auth } from 'firebase-admin/auth';
-import { getMessaging, Messaging } from 'firebase-admin/messaging';
+  initializeApp as initializeAdminApp,
+  getApps as getAdminApps,
+  cert,
+  type App,
+} from 'firebase-admin/app';
+import {
+  getFirestore as getAdminFirestore,
+  FieldValue,
+  Timestamp,
+  type Firestore as AdminFirestore,
+  type Transaction,
+} from 'firebase-admin/firestore';
+import { getAuth, type Auth } from 'firebase-admin/auth';
+import { getMessaging, type Messaging } from 'firebase-admin/messaging';
 import fs from 'fs';
 import path from 'path';
-
-// Suppress noisy client SDK connection logs on server
-try {
-  setLogLevel('silent');
-} catch {
-  // ignore
-}
 
 export interface FirebaseConfig {
   projectId: string;
@@ -34,6 +26,8 @@ export interface FirebaseConfig {
   authDomain?: string;
   firestoreDatabaseId?: string;
   storageBucket?: string;
+  messagingSenderId?: string;
+  oAuthClientId?: string;
   clientEmail?: string;
   privateKey?: string;
 }
@@ -53,50 +47,67 @@ function loadConfig(): FirebaseConfig {
         config = JSON.parse(fs.readFileSync(p, 'utf8'));
         break;
       } catch {
-        // ignore and continue
+        // continue checking other paths
       }
     }
   }
 
+  const projectId = process.env.FIREBASE_PROJECT_ID || config.projectId || '';
+  if (!projectId) {
+    throw new Error(
+      'Missing Firebase Project ID. Configure FIREBASE_PROJECT_ID or firebase-applet-config.json.'
+    );
+  }
+
   return {
-    projectId: process.env.FIREBASE_PROJECT_ID || config.projectId || 'gen-lang-client-0565045974',
+    projectId,
     apiKey: config.apiKey,
     authDomain: config.authDomain,
-    firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || config.firestoreDatabaseId,
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || config.storageBucket,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || config.firestoreDatabaseId || '',
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || config.storageBucket || '',
+    messagingSenderId: config.messagingSenderId || '',
+    oAuthClientId: config.oAuthClientId || '',
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
+    privateKey: process.env.FIREBASE_PRIVATE_KEY
+      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+      : '',
   };
 }
 
 export const firebaseConfig = loadConfig();
 
+export const hasServiceAccountCredentials = Boolean(
+  firebaseConfig.clientEmail && firebaseConfig.privateKey
+);
+
 let adminApp: App | null = null;
 let adminDbInstance: AdminFirestore | null = null;
 let adminAuthInstance: Auth | null = null;
 let adminMessagingInstance: Messaging | null = null;
-let clientDbInstance: ClientFirestore | null = null;
-let isConnected = false;
 
-// Initialize Admin App (Authoritative Server SDK)
 try {
   if (getAdminApps().length === 0) {
-    if (firebaseConfig.clientEmail && firebaseConfig.privateKey) {
+    if (hasServiceAccountCredentials) {
       adminApp = initializeAdminApp({
         credential: cert({
           projectId: firebaseConfig.projectId,
-          clientEmail: firebaseConfig.clientEmail,
-          privateKey: firebaseConfig.privateKey,
+          clientEmail: firebaseConfig.clientEmail!,
+          privateKey: firebaseConfig.privateKey!,
         }),
-        storageBucket: firebaseConfig.storageBucket,
+        projectId: firebaseConfig.projectId,
+        storageBucket: firebaseConfig.storageBucket || undefined,
       });
-      console.log('🔥 Firebase Admin initialized with Service Account credentials');
+      console.log(
+        `🔥 Firebase Admin initialized with Service Account for project: ${firebaseConfig.projectId}`
+      );
     } else {
       adminApp = initializeAdminApp({
         projectId: firebaseConfig.projectId,
-        storageBucket: firebaseConfig.storageBucket,
+        storageBucket: firebaseConfig.storageBucket || undefined,
       });
-      console.log(`🔥 Firebase Admin initialized with Project ID: ${firebaseConfig.projectId}`);
+      console.warn(
+        `⚠️ Firebase Admin initialized without FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY (Project: ${firebaseConfig.projectId}). Protected Firestore/Auth operations require valid service account credentials.`
+      );
     }
   } else {
     adminApp = getAdminApps()[0];
@@ -107,113 +118,115 @@ try {
     adminDbInstance = firebaseConfig.firestoreDatabaseId
       ? getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId)
       : getAdminFirestore(adminApp);
+    adminDbInstance.settings({ ignoreUndefinedProperties: true });
+
     try {
       adminMessagingInstance = getMessaging(adminApp);
-      console.log('🔥 Firebase Admin Messaging initialized');
     } catch (mErr) {
       console.warn('⚠️ Firebase Admin Messaging initialization notice:', mErr);
     }
   }
 } catch (err) {
-  console.warn('⚠️ Firebase Admin initialization notice:', err);
+  console.error('❌ Firebase Admin initialization error:', err);
 }
 
-// Initialize Client Web SDK as secondary fallback with forced HTTP long polling
-try {
-  const clientApps = getClientApps();
-  const cApp = clientApps.length > 0 ? clientApps[0] : initializeClientApp({
-    apiKey: firebaseConfig.apiKey,
-    authDomain: firebaseConfig.authDomain,
-    projectId: firebaseConfig.projectId,
-    storageBucket: firebaseConfig.storageBucket,
-  });
-  clientDbInstance = initializeClientFirestore(
-    cApp,
-    { experimentalForceLongPolling: true },
-    firebaseConfig.firestoreDatabaseId || ''
-  );
-  isConnected = true;
-  console.log(`🔥 Client Firestore initialized for database: ${firebaseConfig.firestoreDatabaseId || 'default'}`);
-} catch (err) {
-  console.warn('⚠️ Client Firestore initialization notice:', err);
-}
-
-export const firestoreDb = {
-  async docSet(collectionPath: string, docId: string, data: any): Promise<void> {
-    const cleanData = JSON.parse(JSON.stringify(data));
-    try {
-      if (adminDbInstance) {
-        await adminDbInstance.collection(collectionPath).doc(docId).set(cleanData, { merge: true });
-      } else if (clientDbInstance) {
-        const docRef = doc(clientDbInstance, collectionPath, docId);
-        await setDoc(docRef, cleanData, { merge: true });
-      }
-    } catch (err) {
-      console.debug(`docSet notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
-    }
-  },
-
-  async docGet(collectionPath: string, docId: string): Promise<any | null> {
-    try {
-      if (adminDbInstance) {
-        const snap = await adminDbInstance.collection(collectionPath).doc(docId).get();
-        return snap.exists ? { id: snap.id, ...snap.data() } : null;
-      } else if (clientDbInstance) {
-        const docRef = doc(clientDbInstance, collectionPath, docId);
-        const snap = await getDoc(docRef);
-        return snap.exists() ? { id: snap.id, ...snap.data() } : null;
-      }
-    } catch (err) {
-      console.debug(`docGet notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
-    }
-    return null;
-  },
-
-  async collectionGetAll(collectionPath: string): Promise<any[]> {
-    try {
-      if (adminDbInstance) {
-        const snap = await adminDbInstance.collection(collectionPath).get();
-        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      } else if (clientDbInstance) {
-        const colRef = firestoreCollection(clientDbInstance, collectionPath);
-        const snap = await getDocs(colRef);
-        return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      }
-    } catch (err) {
-      console.debug(`collectionGetAll notice for ${collectionPath}:`, err instanceof Error ? err.message : err);
-    }
-    return [];
-  },
-
-  async queryByField(collectionPath: string, field: string, value: any): Promise<any[]> {
-    const all = await this.collectionGetAll(collectionPath);
-    return all.filter((item) => {
-      const targetVal = item[field];
-      if (typeof targetVal === 'string' && typeof value === 'string') {
-        return targetVal.toLowerCase() === value.toLowerCase();
-      }
-      return targetVal === value;
-    });
-  },
-
-  async docDelete(collectionPath: string, docId: string): Promise<void> {
-    try {
-      if (adminDbInstance) {
-        await adminDbInstance.collection(collectionPath).doc(docId).delete();
-      } else if (clientDbInstance) {
-        const docRef = doc(clientDbInstance, collectionPath, docId);
-        await deleteDoc(docRef);
-      }
-    } catch (err) {
-      console.debug(`docDelete notice for ${collectionPath}/${docId}:`, err instanceof Error ? err.message : err);
-    }
+export class FirebaseConfigurationError extends Error {
+  public readonly statusCode = 503;
+  constructor(message: string) {
+    super(message);
+    this.name = 'FirebaseConfigurationError';
   }
-};
+}
+
+export function requireAdminDb(): AdminFirestore {
+  if (!adminDbInstance) {
+    throw new FirebaseConfigurationError(
+      'Cloud Firestore Admin SDK is not initialized. Verify Firebase project configuration and service account credentials.'
+    );
+  }
+  return adminDbInstance;
+}
+
+export function isPermissionOrAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown })?.code;
+  return (
+    code === 7 ||
+    code === 16 ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('UNAUTHENTICATED') ||
+    msg.includes('Could not load the default credentials') ||
+    msg.includes('Unable to detect a Project Id')
+  );
+}
+
+export function wrapFirestoreError(err: unknown, operation: string): never {
+  if (err instanceof FirebaseConfigurationError) {
+    throw err;
+  }
+  if (isPermissionOrAuthError(err)) {
+    throw new FirebaseConfigurationError(
+      `Firestore Admin access denied during "${operation}" on project "${firebaseConfig.projectId}". Configure FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY service account environment variables.`
+    );
+  }
+  throw err;
+}
+
+export async function runFirestoreTransaction<T>(
+  fn: (tx: Transaction, db: AdminFirestore) => Promise<T>,
+  operationName = 'transaction'
+): Promise<T> {
+  const db = requireAdminDb();
+  try {
+    return await db.runTransaction((tx) => fn(tx, db));
+  } catch (err) {
+    wrapFirestoreError(err, operationName);
+  }
+}
+
+export async function verifyFirestoreConnectivity(): Promise<{
+  connected: boolean;
+  hasServiceAccount: boolean;
+  projectId: string;
+  databaseId: string;
+  error?: string;
+}> {
+  const base = {
+    hasServiceAccount: hasServiceAccountCredentials,
+    projectId: firebaseConfig.projectId,
+    databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+  };
+
+  if (!adminDbInstance) {
+    return {
+      ...base,
+      connected: false,
+      error: 'Firebase Admin Firestore instance is not initialized',
+    };
+  }
+
+  try {
+    await adminDbInstance.collection('systemConfig').doc('bootstrap').get();
+    return {
+      ...base,
+      connected: true,
+    };
+  } catch (err) {
+    return {
+      ...base,
+      connected: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export const isAdminSdkConfigured = hasServiceAccountCredentials && Boolean(adminDbInstance);
 
 export {
   adminApp,
   adminAuthInstance as adminAuth,
   adminDbInstance as adminDb,
   adminMessagingInstance as adminMessaging,
-  isConnected as isFirebaseConfigured,
+  FieldValue,
+  Timestamp,
 };

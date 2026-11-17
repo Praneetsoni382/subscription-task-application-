@@ -1,5 +1,5 @@
 // ============================================================
-// TASK ROUTES
+// TASK ROUTES (WORKSPACE-SCOPED ASYNC FIRESTORE)
 // ============================================================
 
 import { Router } from 'express';
@@ -10,8 +10,7 @@ import {
   userRepo,
   auditRepo,
   nextTaskRef,
-  newId,
-} from '../repositories/inMemoryStore.js';
+} from '../repositories/firestoreRepository.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import {
@@ -19,14 +18,10 @@ import {
   createNotification,
   notifTemplates,
 } from '../services/notificationService.js';
-import type { TaskStatus, MemberStatus } from '../types/index.js';
+import type { TaskStatus, MemberStatus, Task } from '../types/index.js';
 import { format } from 'date-fns';
 
 const router = Router();
-
-// ============================================================
-// HELPERS
-// ============================================================
 
 function formatDeadline(deadline: string): string {
   try {
@@ -36,30 +31,39 @@ function formatDeadline(deadline: string): string {
   }
 }
 
-function enrichTask(taskId: string) {
-  const task = taskRepo.findById(taskId);
-  if (!task) return null;
-  const members = taskMemberRepo.findByTask(taskId).map((tm) => {
-    const user = userRepo.findById(tm.userId);
-    const { passwordHash: _, ...safeUser } = user ?? {
-      id: tm.userId,
-      fullName: 'Unknown',
-      passwordHash: '',
-      employeeId: '',
-      email: '',
-      department: '',
-      designation: '',
-      role: 'employee' as const,
-      active: false,
-      createdAt: '',
-      updatedAt: '',
-    };
-    return { ...tm, user: safeUser };
-  });
+async function enrichTask(task: Task) {
+  const rawMembers = await taskMemberRepo.findByTask(task.id, task.workspaceId);
+  const members = await Promise.all(
+    rawMembers.map(async (tm) => {
+      const user = await userRepo.findByIdInWorkspace(tm.userId, task.workspaceId);
+      if (!user) {
+        return {
+          ...tm,
+          user: {
+            id: tm.userId,
+            uid: tm.userId,
+            workspaceId: task.workspaceId,
+            fullName: 'Unknown',
+            employeeId: '',
+            email: '',
+            department: '',
+            designation: '',
+            role: 'employee' as const,
+            active: false,
+            accountStatus: 'deactivated' as const,
+            lastLoginAt: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        };
+      }
+      const { passwordHash: _, ...safeUser } = user;
+      return { ...tm, user: safeUser };
+    })
+  );
   return { ...task, members };
 }
 
-// Validate task status transitions
 const VALID_TRANSITIONS: Record<string, string[]> = {
   pending: ['in_progress', 'blocked', 'cancelled'],
   in_progress: ['blocked', 'submitted_for_review', 'cancelled'],
@@ -73,10 +77,6 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
 function isValidTransition(from: string, to: string): boolean {
   return VALID_TRANSITIONS[from]?.includes(to) ?? false;
 }
-
-// ============================================================
-// TASK CREATION SCHEMA
-// ============================================================
 
 const createTaskSchema = z.object({
   title: z.string().min(2, 'Title is required'),
@@ -94,19 +94,19 @@ const createTaskSchema = z.object({
   assignedUserIds: z.array(z.string()).min(1, 'At least one employee must be assigned'),
 });
 
-// ============================================================
 // GET /api/tasks
-// ============================================================
 router.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
     const { status, priority, assignmentType, search } = req.query;
-    const isAdmin = req.session.role === 'admin';
+    const isAdmin = user.role === 'admin';
 
     let tasks = isAdmin
-      ? taskRepo.findAll()
-      : taskRepo.findByMember(req.session.userId!);
+      ? await taskRepo.findAllInWorkspace(workspaceId)
+      : await taskRepo.findByMemberInWorkspace(user.id, workspaceId);
 
     if (status && typeof status === 'string') {
       tasks = tasks.filter((t) => t.status === status);
@@ -127,22 +127,21 @@ router.get(
       );
     }
 
-    const enriched = tasks
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((t) => enrichTask(t.id))
-      .filter(Boolean);
+    tasks.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const enriched = await Promise.all(tasks.map((t) => enrichTask(t)));
 
     res.json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // POST /api/tasks
-// ============================================================
 router.post(
   '/',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
     const parse = createTaskSchema.safeParse(req.body);
     if (!parse.success) {
       res.status(400).json({ success: false, error: parse.error.errors[0].message });
@@ -150,47 +149,35 @@ router.post(
     }
 
     const data = parse.data;
+    const uniqueUserIds = [...new Set(data.assignedUserIds)];
 
-    // Validate assignment type
-    if (data.assignmentType === 'group' && data.assignedUserIds.length < 2) {
-      res.status(400).json({
-        success: false,
-        error: 'Group tasks require at least 2 employees',
-      });
+    if (data.assignmentType === 'group' && uniqueUserIds.length < 2) {
+      res.status(400).json({ success: false, error: 'Group tasks require at least 2 employees' });
       return;
     }
-    if (data.assignmentType === 'solo' && data.assignedUserIds.length !== 1) {
-      res.status(400).json({
-        success: false,
-        error: 'Solo tasks require exactly 1 employee',
-      });
+    if (data.assignmentType === 'solo' && uniqueUserIds.length !== 1) {
+      res.status(400).json({ success: false, error: 'Solo tasks require exactly 1 employee' });
       return;
     }
 
-    // Validate employees exist and are active
     const employees: { id: string; fullName: string }[] = [];
-    for (const userId of data.assignedUserIds) {
-      const user = userRepo.findById(userId);
+    for (const userId of uniqueUserIds) {
+      const user = await userRepo.findByIdInWorkspace(userId, workspaceId);
       if (!user || user.role !== 'employee') {
-        res.status(400).json({ success: false, error: `Employee ${userId} not found` });
+        res.status(400).json({ success: false, error: `Employee ${userId} not found in workspace` });
         return;
       }
       if (!user.active) {
-        res.status(400).json({
-          success: false,
-          error: `Employee ${user.fullName} is inactive`,
-        });
+        res.status(400).json({ success: false, error: `Employee ${user.fullName} is inactive` });
         return;
       }
       employees.push({ id: user.id, fullName: user.fullName });
     }
 
-    // Remove duplicates
-    const uniqueUserIds = [...new Set(data.assignedUserIds)];
-
-    // Create task
+    const referenceNumber = await nextTaskRef(workspaceId);
     const task = await taskRepo.create({
-      referenceNumber: nextTaskRef(),
+      workspaceId,
+      referenceNumber,
       title: data.title,
       description: data.description,
       assignmentType: data.assignmentType,
@@ -204,15 +191,14 @@ router.post(
       reminderEnabled: data.reminderEnabled,
       reminderTimes: data.reminderTimes,
       managerNote: data.managerNote ?? '',
-      createdBy: req.session.userId!,
+      createdBy: admin.id,
       cancelledAt: null,
     });
 
     const now = new Date().toISOString();
-
-    // Create task members + notifications
     for (const userId of uniqueUserIds) {
       await taskMemberRepo.create({
+        workspaceId,
         taskId: task.id,
         userId,
         memberStatus: 'pending',
@@ -223,22 +209,26 @@ router.post(
         revisionReason: '',
         lastStatusUpdateAt: now,
         reminderEligible: true,
+        assignedAt: now,
+        updatedAt: now,
       });
 
       const tmpl = notifTemplates.taskAssigned(task.title, formatDeadline(task.deadline));
       await createNotification({
+        workspaceId,
         recipientUserId: userId,
         eventType: 'TASK_ASSIGNED',
         title: tmpl.title,
         body: tmpl.body,
         relatedTaskId: task.id,
-        navigationUrl: `/tasks/${task.id}`,
+        navigationUrl: `/employee/tasks/${task.id}`,
       });
     }
 
     const memberNames = employees.map((e) => e.fullName).join(', ');
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: admin.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'TASK_CREATED',
@@ -246,52 +236,47 @@ router.post(
       message: `Task created and assigned to ${memberNames}`,
     });
 
-    const enriched = enrichTask(task.id);
+    const enriched = await enrichTask(task);
     res.status(201).json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // GET /api/tasks/:id
-// ============================================================
 router.get(
   '/:id',
   requireAuth,
   asyncHandler(async (req, res) => {
-    let task = taskRepo.findById(req.params.id);
-    if (!task) {
-      task = await taskRepo.fetchFromCloudById(req.params.id);
-    }
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    // Authorization: employees can only see tasks they're assigned to
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    const enriched = enrichTask(task.id);
+    const enriched = await enrichTask(task);
     res.json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // PATCH /api/tasks/:id
-// ============================================================
 router.patch(
   '/:id',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    let task = taskRepo.findById(req.params.id);
-    if (!task) {
-      task = await taskRepo.fetchFromCloudById(req.params.id);
-    }
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
@@ -319,8 +304,7 @@ router.patch(
       return;
     }
 
-    const deadlineChanged = parse.data.deadline && parse.data.deadline !== task.deadline;
-
+    const deadlineChanged = Boolean(parse.data.deadline && parse.data.deadline !== task.deadline);
     const updated = await taskRepo.update(task.id, parse.data);
     if (!updated) {
       res.status(500).json({ success: false, error: 'Update failed' });
@@ -328,22 +312,23 @@ router.patch(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: admin.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'TASK_UPDATED',
       message: `Task "${task.title}" updated`,
     });
 
-    // Notify members if deadline changed
     if (deadlineChanged) {
-      const members = taskMemberRepo.findByTask(task.id);
+      const members = await taskMemberRepo.findByTask(task.id, workspaceId);
       for (const m of members) {
         const tmpl = notifTemplates.deadlineChanged(
           updated.title,
           formatDeadline(updated.deadline)
         );
         await createNotification({
+          workspaceId,
           recipientUserId: m.userId,
           eventType: 'DEADLINE_CHANGED',
           title: tmpl.title,
@@ -353,19 +338,20 @@ router.patch(
       }
     }
 
-    const enriched = enrichTask(task.id);
+    const enriched = await enrichTask(updated);
     res.json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // POST /api/tasks/:id/cancel
-// ============================================================
 router.post(
   '/:id/cancel',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
@@ -380,12 +366,12 @@ router.post(
       cancelledAt: new Date().toISOString(),
     });
 
-    // Disable reminders for all members
-    const members = taskMemberRepo.findByTask(task.id);
+    const members = await taskMemberRepo.findByTask(task.id, workspaceId);
     for (const m of members) {
       await taskMemberRepo.update(m.id, { reminderEligible: false });
       const tmpl = notifTemplates.taskCancelled(task.title);
       await createNotification({
+        workspaceId,
         recipientUserId: m.userId,
         eventType: 'TASK_CANCELLED',
         title: tmpl.title,
@@ -395,7 +381,8 @@ router.post(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: admin.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'TASK_CANCELLED',
@@ -404,96 +391,94 @@ router.post(
       message: `Task "${task.title}" cancelled by administrator`,
     });
 
-    const enriched = enrichTask(task.id);
+    const enriched = await enrichTask(updated || task);
     res.json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // GET /api/tasks/:id/history
-// ============================================================
 router.get(
   '/:id/history',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    const history = auditRepo.findByEntity(task.id);
-    const enriched = history.map((e) => {
-      const actor = userRepo.findById(e.actorUserId);
-      return { ...e, actorName: actor?.fullName ?? 'System' };
-    });
+    const history = await auditRepo.findByEntityInWorkspace(task.id, workspaceId);
+    const enriched = await Promise.all(
+      history.map(async (e) => {
+        const actor = await userRepo.findByIdInWorkspace(e.actorUserId, workspaceId);
+        return { ...e, actorName: actor?.fullName ?? 'System' };
+      })
+    );
 
     res.json({ success: true, data: enriched });
   })
 );
 
-// ============================================================
 // GET /api/tasks/:id/members
-// ============================================================
 router.get(
   '/:id/members',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    const members = taskMemberRepo.findByTask(task.id).map((tm) => {
-      const user = userRepo.findById(tm.userId);
-      const { passwordHash: _, ...safeUser } = user!;
-      return { ...tm, user: safeUser };
-    });
-
-    res.json({ success: true, data: members });
+    const enriched = await enrichTask(task);
+    res.json({ success: true, data: enriched.members });
   })
 );
 
-// ============================================================
 // PATCH /api/tasks/:id/members/:memberId/status
-// Employee updates their own status
-// ============================================================
 router.patch(
   '/:id/members/:memberId/status',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const actor = req.authUser!;
+    const workspaceId = actor.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    const member = taskMemberRepo.findById(req.params.memberId);
-    if (!member || member.taskId !== task.id) {
+    const member = await taskMemberRepo.findById(req.params.memberId);
+    if (!member || member.taskId !== task.id || member.workspaceId !== workspaceId) {
       res.status(404).json({ success: false, error: 'Member record not found' });
       return;
     }
 
-    // Only the member themselves (or admin) can update the status
-    if (req.session.role !== 'admin' && member.userId !== req.session.userId) {
-      res.status(403).json({ success: false, error: 'Cannot modify another member\'s status' });
+    if (actor.role !== 'admin' && member.userId !== actor.id) {
+      res.status(403).json({ success: false, error: "Cannot modify another member's status" });
       return;
     }
 
@@ -524,12 +509,10 @@ router.patch(
       lastStatusUpdateAt: new Date().toISOString(),
     });
 
-    const actor = userRepo.findById(req.session.userId!)!;
-
-    // Handle blocker notifications
     if (newStatus === 'blocked') {
       const tmpl = notifTemplates.blockerReported(actor.fullName, task.title);
       await createNotification({
+        workspaceId,
         recipientUserId: task.createdBy,
         eventType: 'BLOCKER_REPORTED',
         title: tmpl.title,
@@ -540,6 +523,7 @@ router.patch(
     if (oldStatus === 'blocked' && newStatus === 'in_progress') {
       const tmpl = notifTemplates.blockerResolved(actor.fullName, task.title);
       await createNotification({
+        workspaceId,
         recipientUserId: task.createdBy,
         eventType: 'BLOCKER_RESOLVED',
         title: tmpl.title,
@@ -549,7 +533,8 @@ router.patch(
     }
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: actor.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'STATUS_CHANGED',
@@ -558,34 +543,32 @@ router.patch(
       message: `${actor.fullName} updated status from ${oldStatus} to ${newStatus}${parse.data.explanation ? ': ' + parse.data.explanation : ''}`,
     });
 
-    // Recalculate overall task status
-    await updateOverallTaskStatus(task.id, req.session.userId!);
-
+    await updateOverallTaskStatus(task.id, workspaceId);
     res.json({ success: true, data: updatedMember });
   })
 );
 
-// ============================================================
 // POST /api/tasks/:id/members/:memberId/submit
-// Employee submits their work
-// ============================================================
 router.post(
   '/:id/members/:memberId/submit',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const actor = req.authUser!;
+    const workspaceId = actor.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    const member = taskMemberRepo.findById(req.params.memberId);
-    if (!member || member.taskId !== task.id) {
+    const member = await taskMemberRepo.findById(req.params.memberId);
+    if (!member || member.taskId !== task.id || member.workspaceId !== workspaceId) {
       res.status(404).json({ success: false, error: 'Member record not found' });
       return;
     }
 
-    if (req.session.role !== 'admin' && member.userId !== req.session.userId) {
+    if (actor.role !== 'admin' && member.userId !== actor.id) {
       res.status(403).json({ success: false, error: 'Access denied' });
       return;
     }
@@ -611,11 +594,9 @@ router.post(
       lastStatusUpdateAt: now,
     });
 
-    const actor = userRepo.findById(req.session.userId!)!;
-
-    // Notify admin
     const tmpl = notifTemplates.taskSubmitted(actor.fullName, task.title);
     await createNotification({
+      workspaceId,
       recipientUserId: task.createdBy,
       eventType: 'TASK_SUBMITTED',
       title: tmpl.title,
@@ -624,7 +605,8 @@ router.post(
     });
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: actor.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'MEMBER_SUBMITTED',
@@ -633,19 +615,18 @@ router.post(
       message: `${actor.fullName} submitted task for review`,
     });
 
-    // Check if group task is fully submitted
     if (task.assignmentType === 'group') {
-      const allMembers = taskMemberRepo.findByTask(task.id);
+      const allMembers = await taskMemberRepo.findByTask(task.id, workspaceId);
       const allSubmitted = allMembers.every(
         (m) => m.memberStatus === 'submitted_for_review' || m.memberStatus === 'approved'
       );
 
       if (allSubmitted) {
-        // Notify other group members
         for (const m of allMembers) {
-          if (m.userId !== req.session.userId) {
+          if (m.userId !== actor.id) {
             const grpTmpl = notifTemplates.groupMemberSubmitted(actor.fullName, task.title);
             await createNotification({
+              workspaceId,
               recipientUserId: m.userId,
               eventType: 'GROUP_MEMBER_SUBMITTED',
               title: grpTmpl.title,
@@ -655,9 +636,9 @@ router.post(
           }
         }
 
-        // Notify admin about full group submission
         const readyTmpl = notifTemplates.groupReadyForReview(task.title);
         await createNotification({
+          workspaceId,
           recipientUserId: task.createdBy,
           eventType: 'GROUP_READY_FOR_REVIEW',
           title: readyTmpl.title,
@@ -667,37 +648,33 @@ router.post(
       }
     }
 
-    await updateOverallTaskStatus(task.id, req.session.userId!);
-
+    await updateOverallTaskStatus(task.id, workspaceId);
     res.json({ success: true, data: updatedMember });
   })
 );
 
-// ============================================================
 // POST /api/tasks/:id/members/:memberId/approve
-// Admin approves submission
-// ============================================================
 router.post(
   '/:id/members/:memberId/approve',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    const member = taskMemberRepo.findById(req.params.memberId);
-    if (!member || member.taskId !== task.id) {
+    const member = await taskMemberRepo.findById(req.params.memberId);
+    if (!member || member.taskId !== task.id || member.workspaceId !== workspaceId) {
       res.status(404).json({ success: false, error: 'Member record not found' });
       return;
     }
 
     if (member.memberStatus !== 'submitted_for_review') {
-      res.status(400).json({
-        success: false,
-        error: 'Can only approve submitted work',
-      });
+      res.status(400).json({ success: false, error: 'Can only approve submitted work' });
       return;
     }
 
@@ -710,6 +687,7 @@ router.post(
 
     const tmpl = notifTemplates.taskApproved(task.title);
     await createNotification({
+      workspaceId,
       recipientUserId: member.userId,
       eventType: 'TASK_APPROVED',
       title: tmpl.title,
@@ -718,37 +696,37 @@ router.post(
     });
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: admin.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'MEMBER_APPROVED',
       previousState: 'submitted_for_review',
       newState: 'approved',
-      message: `Submission approved`,
+      message: 'Submission approved',
     });
 
-    await updateOverallTaskStatus(task.id, req.session.userId!);
-
+    await updateOverallTaskStatus(task.id, workspaceId);
     res.json({ success: true, data: updatedMember });
   })
 );
 
-// ============================================================
 // POST /api/tasks/:id/members/:memberId/request-revision
-// Admin requests revision
-// ============================================================
 router.post(
   '/:id/members/:memberId/request-revision',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.id);
+    const admin = req.authUser!;
+    const workspaceId = admin.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.id, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    const member = taskMemberRepo.findById(req.params.memberId);
-    if (!member || member.taskId !== task.id) {
+    const member = await taskMemberRepo.findById(req.params.memberId);
+    if (!member || member.taskId !== task.id || member.workspaceId !== workspaceId) {
       res.status(404).json({ success: false, error: 'Member record not found' });
       return;
     }
@@ -772,6 +750,7 @@ router.post(
 
     const tmpl = notifTemplates.revisionRequested(task.title);
     await createNotification({
+      workspaceId,
       recipientUserId: member.userId,
       eventType: 'REVISION_REQUESTED',
       title: tmpl.title,
@@ -780,7 +759,8 @@ router.post(
     });
 
     await createAuditEvent({
-      actorUserId: req.session.userId!,
+      workspaceId,
+      actorUserId: admin.id,
       entityType: 'task',
       entityId: task.id,
       eventType: 'REVISION_REQUESTED',
@@ -789,24 +769,19 @@ router.post(
       message: `Revision requested: ${parse.data.reason}`,
     });
 
-    await updateOverallTaskStatus(task.id, req.session.userId!);
-
+    await updateOverallTaskStatus(task.id, workspaceId);
     res.json({ success: true, data: updatedMember });
   })
 );
 
-// ============================================================
-// HELPER: Recalculate overall task status based on members
-// ============================================================
-async function updateOverallTaskStatus(taskId: string, actorId: string) {
-  const task = taskRepo.findById(taskId);
+async function updateOverallTaskStatus(taskId: string, workspaceId: string) {
+  const task = await taskRepo.findByIdInWorkspace(taskId, workspaceId);
   if (!task || task.status === 'cancelled') return;
 
-  const members = taskMemberRepo.findByTask(taskId);
+  const members = await taskMemberRepo.findByTask(taskId, workspaceId);
   if (members.length === 0) return;
 
   const statuses = members.map((m) => m.memberStatus);
-
   let newStatus: TaskStatus = task.status;
 
   if (statuses.every((s) => s === 'approved')) {
@@ -816,7 +791,7 @@ async function updateOverallTaskStatus(taskId: string, actorId: string) {
   } else if (statuses.some((s) => s === 'in_progress')) {
     newStatus = 'in_progress';
   } else if (statuses.some((s) => s === 'blocked')) {
-    newStatus = 'in_progress'; // still in progress if some blocked
+    newStatus = 'in_progress';
   } else if (statuses.some((s) => s === 'revision_requested')) {
     newStatus = 'revision_requested';
   } else if (statuses.every((s) => s === 'pending')) {
@@ -829,4 +804,3 @@ async function updateOverallTaskStatus(taskId: string, actorId: string) {
 }
 
 export default router;
-

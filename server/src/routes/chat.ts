@@ -1,5 +1,5 @@
 // ============================================================
-// CHAT ROUTES
+// CHAT ROUTES (WORKSPACE-SCOPED ASYNC FIRESTORE)
 // ============================================================
 
 import { Router } from 'express';
@@ -9,7 +9,7 @@ import {
   taskRepo,
   taskMemberRepo,
   userRepo,
-} from '../repositories/inMemoryStore.js';
+} from '../repositories/firestoreRepository.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { createAuditEvent } from '../services/notificationService.js';
@@ -21,29 +21,34 @@ router.get(
   '/:taskId/messages',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.taskId);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.taskId, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
     }
 
-    // Authorization: must be a task member or admin
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
       }
     }
 
-    const messages = chatMessageRepo.findByTask(task.id).map((m) => {
-      const sender = userRepo.findById(m.senderUserId);
-      return {
-        ...m,
-        senderName: sender?.fullName ?? 'Unknown',
-        senderRole: sender?.role ?? 'employee',
-      };
-    });
+    const rawMessages = await chatMessageRepo.findByTaskInWorkspace(task.id, workspaceId);
+    const messages = await Promise.all(
+      rawMessages.map(async (m) => {
+        const sender = await userRepo.findByIdInWorkspace(m.senderUserId, workspaceId);
+        return {
+          ...m,
+          senderName: sender?.fullName ?? 'Unknown',
+          senderRole: sender?.role ?? 'employee',
+        };
+      })
+    );
 
     res.json({ success: true, data: messages });
   })
@@ -54,7 +59,10 @@ router.post(
   '/:taskId/messages',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const task = taskRepo.findById(req.params.taskId);
+    const user = req.authUser!;
+    const workspaceId = user.workspaceId;
+
+    const task = await taskRepo.findByIdInWorkspace(req.params.taskId, workspaceId);
     if (!task) {
       res.status(404).json({ success: false, error: 'Task not found' });
       return;
@@ -65,9 +73,8 @@ router.post(
       return;
     }
 
-    // Authorization: must be a task member or admin
-    if (req.session.role !== 'admin') {
-      const member = taskMemberRepo.findByTaskAndUser(task.id, req.session.userId!);
+    if (user.role !== 'admin') {
+      const member = await taskMemberRepo.findByTaskAndUser(task.id, user.id, workspaceId);
       if (!member) {
         res.status(403).json({ success: false, error: 'Access denied' });
         return;
@@ -81,33 +88,32 @@ router.post(
       return;
     }
 
-    const cm = chatMessageRepo.create({
+    const cm = await chatMessageRepo.create({
+      workspaceId,
       taskId: task.id,
-      senderUserId: req.session.userId!,
+      senderUserId: user.id,
       message: parse.data.message,
       createdAt: new Date().toISOString(),
     });
 
-    const sender = userRepo.findById(req.session.userId!);
-
-    createAuditEvent({
-      actorUserId: req.session.userId!,
+    await createAuditEvent({
+      workspaceId,
+      actorUserId: user.id,
       entityType: 'chat',
       entityId: task.id,
       eventType: 'CHAT_MESSAGE_SENT',
-      message: `${sender?.fullName ?? 'Unknown'} sent a message in task chat`,
+      message: `${user.fullName} sent a message in task chat`,
     });
 
     res.status(201).json({
       success: true,
       data: {
         ...cm,
-        senderName: sender?.fullName ?? 'Unknown',
-        senderRole: sender?.role ?? 'employee',
+        senderName: user.fullName,
+        senderRole: user.role,
       },
     });
   })
 );
 
 export default router;
-
