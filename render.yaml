@@ -9,6 +9,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: FIREBASE_STORAGE_BUCKET
+        value: gen-lang-client-0707937978.firebasestorage.app
       - key: SESSION_SECRET
         generateValue: true
       - key: SESSION_INACTIVITY_TIMEOUT_MINUTES
