@@ -4,6 +4,7 @@ import { auth } from '../firebase';
 import { authApi, bootstrapApi } from '../services/api';
 import type { EntitlementSummary, User, Workspace } from '../types';
 import { syncDeviceIfGranted, unregisterDeviceOnLogout } from '../services/fcm';
+import { clearMeetAccessToken } from '../services/googleMeet';
 
 export interface BootstrapPayload {
   workspaceName: string;
@@ -24,8 +25,8 @@ interface AuthContextValue {
   sessionId: string | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<User>;
-  loginWithGoogle: () => Promise<User>;
+  login: (email: string, password: string, forceTakeover?: boolean) => Promise<User>;
+  loginWithGoogle: (forceTakeover?: boolean) => Promise<User>;
   bootstrapWorkspace: (payload: BootstrapPayload) => Promise<User>;
   refreshSession: () => Promise<void>;
   logout: () => Promise<void>;
@@ -161,10 +162,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [persistAuthBundle]);
 
-  const login = async (email: string, password: string): Promise<User> => {
+  const login = async (email: string, password: string, forceTakeover = false): Promise<User> => {
     const existingSessionId = localStorage.getItem('auth_session_id') || undefined;
     try {
-      const res = await authApi.login(email, password, existingSessionId);
+      const res = await authApi.login(email, password, existingSessionId, forceTakeover);
       const payload = res.data as any;
       if (payload.success && payload.data) {
         persistAuthBundle({
@@ -181,16 +182,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const serverErr = err?.response?.data?.error;
       const errCode = err?.response?.data?.code;
       if (err?.response?.status === 409 || errCode === 'ACTIVE_SESSION_CONFLICT') {
-        throw new Error(
+        const conflictErr = new Error(
           serverErr ||
-            'This account is already signed in on another device. Sign out there or wait for the 30-minute session timeout.'
-        );
+            'This account is already signed in on another browser or device. You can sign out the previous session and continue here.'
+        ) as Error & { code?: string };
+        conflictErr.code = 'ACTIVE_SESSION_CONFLICT';
+        throw conflictErr;
       }
       throw new Error(serverErr || err?.message || 'Login failed');
     }
   };
 
-  const loginWithGoogle = async (): Promise<User> => {
+  const loginWithGoogle = async (forceTakeover = false): Promise<User> => {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
     const cred = await signInWithPopup(auth, provider);
@@ -198,7 +201,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const existingSessionId = localStorage.getItem('auth_session_id') || undefined;
 
     try {
-      const res = await authApi.loginWithFirebase(idToken, existingSessionId);
+      const res = await authApi.loginWithFirebase(idToken, existingSessionId, forceTakeover);
       const payload = res.data as any;
       if (payload.success && payload.data) {
         persistAuthBundle({
@@ -216,10 +219,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const serverErr = err?.response?.data?.error;
       const errCode = err?.response?.data?.code;
       if (err?.response?.status === 409 || errCode === 'ACTIVE_SESSION_CONFLICT') {
-        throw new Error(
+        const conflictErr = new Error(
           serverErr ||
-            'This account is already signed in on another device. Sign out there or wait for the 30-minute session timeout.'
-        );
+            'This account is already signed in on another browser or device. You can sign out the previous session and continue here.'
+        ) as Error & { code?: string };
+        conflictErr.code = 'ACTIVE_SESSION_CONFLICT';
+        throw conflictErr;
       }
       throw new Error(serverErr || err?.message || 'Google sign-in failed');
     }
@@ -284,6 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore
     }
+    clearMeetAccessToken();
     clearStoredSession();
     setUser(null);
     setWorkspace(null);

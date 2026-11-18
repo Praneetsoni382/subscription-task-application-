@@ -272,6 +272,10 @@ taskStatusRequestRouter.post(
     // If Meet requested, generate ONE authoritative Google Meet space & consume 1 credit BEFORE creating status requests
     let sharedMeeting: any = null;
     if (includeMeet) {
+      const googleAccessToken =
+        typeof req.headers['x-google-meet-token'] === 'string' && req.headers['x-google-meet-token'].trim()
+          ? req.headers['x-google-meet-token'].trim()
+          : undefined;
       const generated = await generateMeetForWorkspace({
         actor: admin,
         taskId: task.id,
@@ -282,6 +286,7 @@ taskStatusRequestRouter.post(
         scheduledAt: scheduledAtIso,
         status: meetingStatus,
         idempotencyKey,
+        googleAccessToken,
       });
       sharedMeeting = generated.meeting;
     }

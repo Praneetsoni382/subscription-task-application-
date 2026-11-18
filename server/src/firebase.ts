@@ -37,6 +37,7 @@ function loadConfig(): FirebaseConfig {
 
   const possiblePaths = [
     path.resolve(process.cwd(), 'firebase-applet-config.json'),
+    path.resolve(process.cwd(), 'client/src/firebase-applet-config.json'),
     path.resolve(process.cwd(), '../firebase-applet-config.json'),
     path.resolve(import.meta.dirname, '../../firebase-applet-config.json'),
   ];
@@ -44,8 +45,12 @@ function loadConfig(): FirebaseConfig {
   for (const p of possiblePaths) {
     if (fs.existsSync(p)) {
       try {
-        config = JSON.parse(fs.readFileSync(p, 'utf8'));
-        break;
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        config = {
+          ...parsed,
+          ...config,
+          firestoreDatabaseId: config.firestoreDatabaseId || parsed.firestoreDatabaseId || '',
+        };
       } catch {
         // continue checking other paths
       }

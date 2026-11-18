@@ -38,6 +38,10 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionConflict, setSessionConflict] = useState<{
+    method: 'password' | 'google';
+    message: string;
+  } | null>(null);
 
   const { data: bootstrapStatus, isLoading: statusLoading } = useQuery({
     queryKey: ['bootstrap-status'],
@@ -55,36 +59,61 @@ export function LoginPage() {
     }
   }, [user, loading, googleLoading, navigate]);
 
-  const handleLoginSubmit = async (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent, forceTakeover = false) => {
     e.preventDefault();
     setError(null);
+    if (!forceTakeover) setSessionConflict(null);
     if (!email.trim() || !password) {
       setError('Please enter both your email address and password.');
       return;
     }
     try {
       setLoading(true);
-      const loggedIn = await login(email.trim(), password);
+      const loggedIn = await login(email.trim(), password, forceTakeover);
+      setSessionConflict(null);
       navigate(loggedIn.role === 'admin' ? '/admin' : '/employee', { replace: true });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Invalid email or password';
-      setError(message);
+      const typedErr = err as Error & { code?: string };
+      const message = typedErr instanceof Error ? typedErr.message : 'Invalid email or password';
+      if (typedErr?.code === 'ACTIVE_SESSION_CONFLICT') {
+        setSessionConflict({ method: 'password', message });
+      } else {
+        setSessionConflict(null);
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (forceTakeover = false) => {
     setError(null);
+    if (!forceTakeover) setSessionConflict(null);
     try {
       setGoogleLoading(true);
-      const loggedIn = await loginWithGoogle();
+      const loggedIn = await loginWithGoogle(forceTakeover);
+      setSessionConflict(null);
       navigate(loggedIn.role === 'admin' ? '/admin' : '/employee', { replace: true });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Google Sign-In failed';
-      setError(message);
+      const typedErr = err as Error & { code?: string };
+      const message = typedErr instanceof Error ? typedErr.message : 'Google Sign-In failed';
+      if (typedErr?.code === 'ACTIVE_SESSION_CONFLICT') {
+        setSessionConflict({ method: 'google', message });
+      } else {
+        setSessionConflict(null);
+        setError(message);
+      }
     } finally {
       setGoogleLoading(false);
+    }
+  };
+
+  const handleConfirmTakeover = async () => {
+    if (!sessionConflict) return;
+    if (sessionConflict.method === 'google') {
+      await handleGoogleSignIn(true);
+    } else {
+      await handleLoginSubmit({ preventDefault: () => {} } as React.FormEvent, true);
     }
   };
 
@@ -294,7 +323,34 @@ export function LoginPage() {
                 </p>
               </div>
 
-              <form className="space-y-4" onSubmit={handleLoginSubmit}>
+              <form className="space-y-4" onSubmit={(e) => handleLoginSubmit(e, false)}>
+                {sessionConflict && (
+                  <div className="p-3.5 rounded-xl bg-[#FFF8E7] border border-[#F5D87E] space-y-2.5">
+                    <div className="flex items-start gap-2 text-xs text-[#8A5A00] leading-relaxed">
+                      <AlertTriangle size={15} className="shrink-0 mt-0.5 text-[#C58A20]" />
+                      <span>{sessionConflict.message}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        loading={loading || googleLoading}
+                        onClick={handleConfirmTakeover}
+                      >
+                        Sign Out Other Session & Log In Here
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSessionConflict(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 {error && (
                   <div className="p-3 text-xs bg-[#FFF0F0] border border-[#F5B8B8] text-[#D64545] rounded-lg leading-relaxed">
                     {error}
@@ -306,7 +362,10 @@ export function LoginPage() {
                   type="email"
                   placeholder="name@organization.com"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (sessionConflict) setSessionConflict(null);
+                  }}
                   autoComplete="email"
                   required
                 />
@@ -355,7 +414,7 @@ export function LoginPage() {
                 variant="outline"
                 className="w-full"
                 loading={googleLoading}
-                onClick={handleGoogleSignIn}
+                onClick={() => handleGoogleSignIn(false)}
               >
                 <ShieldCheck size={16} className="text-[#2458D3]" />
                 Continue with Google

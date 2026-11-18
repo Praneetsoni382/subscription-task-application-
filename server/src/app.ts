@@ -44,7 +44,9 @@ app.use(
     frameguard: false,
     contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: 'cross-origin' },
-    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   })
 );
 
@@ -53,7 +55,7 @@ app.use(
     origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-device-label'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id', 'x-device-label', 'x-google-meet-token'],
   })
 );
 

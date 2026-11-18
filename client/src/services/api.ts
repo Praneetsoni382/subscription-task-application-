@@ -5,6 +5,7 @@
 import axios from 'axios';
 import type { ApiResponse } from '../types';
 import { auth } from '../firebase';
+import { getCachedMeetAccessToken } from './googleMeet';
 
 const api = axios.create({
   baseURL: '/api',
@@ -39,6 +40,11 @@ api.interceptors.request.use(async (config) => {
     setHeader(config, 'x-session-id', sessionId);
   }
   setHeader(config, 'x-device-label', getDeviceLabel());
+
+  const meetAccessToken = getCachedMeetAccessToken();
+  if (meetAccessToken) {
+    setHeader(config, 'x-google-meet-token', meetAccessToken);
+  }
 
   const token = localStorage.getItem('auth_token');
   if (token) {
@@ -110,10 +116,10 @@ export const bootstrapApi = {
 
 // Auth
 export const authApi = {
-  login: (email: string, password: string, sessionId?: string) =>
-    api.post<ApiResponse>('/auth/login', { email, password, sessionId }),
-  loginWithFirebase: (firebaseIdToken: string, sessionId?: string) =>
-    api.post<ApiResponse>('/auth/login', { firebaseIdToken, sessionId }),
+  login: (email: string, password: string, sessionId?: string, forceTakeover?: boolean) =>
+    api.post<ApiResponse>('/auth/login', { email, password, sessionId, forceTakeover }),
+  loginWithFirebase: (firebaseIdToken: string, sessionId?: string, forceTakeover?: boolean) =>
+    api.post<ApiResponse>('/auth/login', { firebaseIdToken, sessionId, forceTakeover }),
   logout: (deviceId?: string) => api.post<ApiResponse>('/auth/logout', { deviceId }),
   me: () => api.get<ApiResponse>('/auth/me'),
   changePassword: (data: { currentPassword: string; newPassword: string }) =>

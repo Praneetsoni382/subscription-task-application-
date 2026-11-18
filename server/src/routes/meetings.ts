@@ -196,6 +196,11 @@ router.post(
         ? req.body.idempotencyKey.trim()
         : undefined;
 
+    const googleAccessToken =
+      typeof req.headers['x-google-meet-token'] === 'string' && req.headers['x-google-meet-token'].trim()
+        ? req.headers['x-google-meet-token'].trim()
+        : undefined;
+
     const { meeting } = await generateMeetForWorkspace({
       actor: req.authUser!,
       taskId: task.id,
@@ -205,6 +210,7 @@ router.post(
       invitedEmployeeIds: [sr.recipientUserId],
       status: 'draft',
       idempotencyKey,
+      googleAccessToken,
     });
 
     await statusRequestRepo.update(sr.id, { meetingId: meeting.id });

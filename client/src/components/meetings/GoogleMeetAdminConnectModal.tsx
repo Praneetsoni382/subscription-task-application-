@@ -1,14 +1,51 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Video, CheckCircle2, AlertTriangle, Unlink } from 'lucide-react';
+import { Video, CheckCircle2, AlertTriangle, Unlink, ExternalLink } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { meetingApi } from '../../services/api';
-import { checkOAuthUrlParams, startWorkspaceGoogleOAuth } from '../../services/googleMeet';
+import {
+  authorizeGoogleMeetPopup,
+  checkOAuthUrlParams,
+  clearMeetAccessToken,
+  getCachedMeetAccessToken,
+  getCachedMeetEmail,
+  isEmbeddedInIframe,
+  startWorkspaceGoogleOAuth,
+} from '../../services/googleMeet';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+}
+
+function GoogleIcon() {
+  return (
+    <svg
+      version="1.1"
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 48 48"
+      className="w-4 h-4 shrink-0"
+    >
+      <path
+        fill="#EA4335"
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+      />
+      <path
+        fill="#4285F4"
+        d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+      />
+      <path fill="none" d="M0 0h48v48H0z" />
+    </svg>
+  );
 }
 
 export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
@@ -16,8 +53,18 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
   const [connectError, setConnectError] = useState('');
   const [successNotice, setSuccessNotice] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
+  const [sessionMeetEmail, setSessionMeetEmail] = useState<string | null>(
+    () => (getCachedMeetAccessToken() ? getCachedMeetEmail() : null)
+  );
+  const [hasSessionMeetToken, setHasSessionMeetToken] = useState<boolean>(
+    () => Boolean(getCachedMeetAccessToken())
+  );
 
   useEffect(() => {
+    if (isOpen) {
+      setHasSessionMeetToken(Boolean(getCachedMeetAccessToken()));
+      setSessionMeetEmail(getCachedMeetEmail());
+    }
     const { connected, error } = checkOAuthUrlParams();
     if (connected) {
       setSuccessNotice('Workspace Google account authorized successfully!');
@@ -43,7 +90,14 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
   });
 
   const disconnectMutation = useMutation({
-    mutationFn: () => meetingApi.disconnectGoogle(),
+    mutationFn: async () => {
+      clearMeetAccessToken();
+      setHasSessionMeetToken(false);
+      setSessionMeetEmail(null);
+      if (statusData?.isConnected) {
+        await meetingApi.disconnectGoogle();
+      }
+    },
     onSuccess: () => {
       setSuccessNotice('');
       setConnectError('');
@@ -61,21 +115,35 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
     setSuccessNotice('');
     setIsConnecting(true);
     try {
-      await startWorkspaceGoogleOAuth();
+      // On Render production (when server-side OAuth credentials + encryption key are configured),
+      // use the full-page OAuth redirect flow so refresh tokens are encrypted in Firestore and
+      // browser popup/third-party cookie restrictions are avoided completely.
+      if (statusData?.hasOAuthConfig && statusData?.hasEncryptionKey) {
+        await startWorkspaceGoogleOAuth();
+        return;
+      }
+
+      const result = await authorizeGoogleMeetPopup();
+      setHasSessionMeetToken(true);
+      setSessionMeetEmail(result.email);
+      setSuccessNotice(
+        `Google Meet connected${result.email ? ` as ${result.email}` : ''}. You can now create real Google Meet links.`
+      );
+      queryClient.invalidateQueries({ queryKey: ['admin-google-status'] });
     } catch (err: any) {
       setConnectError(
         err?.response?.data?.error ||
           err?.message ||
-          'Failed to initiate Workspace Google OAuth flow.'
+          'Google Meet authorization was cancelled or could not be completed.'
       );
+    } finally {
       setIsConnecting(false);
     }
   };
 
-  const isConnected = Boolean(statusData?.isConnected);
-  const connectedEmail = statusData?.connectedEmail || 'Authorized Google Account';
-  const missingServerConfig =
-    statusData && (!statusData.hasOAuthConfig || !statusData.hasEncryptionKey);
+  const isConnected = Boolean(statusData?.isConnected) || hasSessionMeetToken;
+  const connectedEmail =
+    sessionMeetEmail || statusData?.connectedEmail || 'Authorized Google Account';
 
   return (
     <Modal
@@ -105,7 +173,7 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
                 </div>
               ) : (
                 <p className="text-[11px] text-[#D64545] font-semibold mt-0.5">
-                  Not Connected — Workspace Admin Authorization Required
+                  Not Connected — Sign in with Google to authorize Meet
                 </p>
               )}
             </div>
@@ -123,34 +191,17 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
               Disconnect
             </Button>
           ) : (
-            <Button
-              size="sm"
+            <button
+              type="button"
               onClick={handleConnectGoogle}
-              loading={isConnecting}
-              disabled={Boolean(missingServerConfig)}
-              className="bg-[#3157A4] hover:bg-[#264482] text-xs font-bold shrink-0"
+              disabled={isConnecting}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-white hover:bg-[#F8FAFD] text-[#172033] border border-[#D0D5DD] shadow-2xs text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60 shrink-0"
             >
-              Connect with Google
-            </Button>
+              <GoogleIcon />
+              <span>{isConnecting ? 'Connecting...' : 'Sign in with Google'}</span>
+            </button>
           )}
         </div>
-
-        {missingServerConfig && (
-          <div className="p-3.5 bg-[#FFF8E7] text-[#C58A20] rounded-xl border border-[#F5D87E] text-xs space-y-1">
-            <div className="flex items-center gap-2 font-bold">
-              <AlertTriangle size={15} className="shrink-0" />
-              <span>Server OAuth Configuration Incomplete</span>
-            </div>
-            <p className="text-[#172033] text-[11px] leading-relaxed">
-              Backend environment variables{' '}
-              <span className="font-mono font-semibold">
-                {!statusData.hasOAuthConfig ? 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET ' : ''}
-                {!statusData.hasEncryptionKey ? 'OAUTH_TOKEN_ENCRYPTION_KEY' : ''}
-              </span>{' '}
-              must be configured before Workspace Google OAuth tokens can be authorized and encrypted.
-            </p>
-          </div>
-        )}
 
         {successNotice && (
           <div className="p-3.5 bg-[#EDFAF4] text-[#16865B] rounded-xl border border-[#A8DFC5] text-xs flex items-center gap-2">
@@ -170,22 +221,38 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
           <div className="p-4 bg-[#F0F9FF] rounded-xl border border-[#B8DDFB] space-y-3 text-xs">
             <div className="flex items-center gap-2 font-bold text-[#3157A4]">
               <Video size={16} />
-              <span>Centralized Workspace Google Meet Authorization</span>
+              <span>Google Meet Space Authorization</span>
             </div>
             <p className="text-[#667085] leading-relaxed">
-              Connect your Google account once for this Workspace via official OAuth 2.0 Authorization Code flow. Tokens are encrypted with AES-256-GCM on the server and automatically refreshed so your team can generate up to 5 Google Meet spaces per 30-day Premium period.
+              Sign in with Google to grant TaskFlow permission to create real Google Meet rooms for your Workspace status discussions. Your authorization stays in memory for this session and powers up to 5 Google Meet links per 30-day Premium period.
             </p>
-            <div className="pt-1">
-              <Button
-                size="sm"
+            <div className="pt-1 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
                 onClick={handleConnectGoogle}
-                loading={isConnecting}
-                disabled={Boolean(missingServerConfig)}
-                className="bg-[#3157A4] hover:bg-[#264482] text-xs font-bold"
+                disabled={isConnecting}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white hover:bg-[#F8FAFD] text-[#172033] border border-[#D0D5DD] shadow-2xs text-xs font-semibold transition-colors cursor-pointer disabled:opacity-60"
               >
-                Connect with Google
-              </Button>
+                <GoogleIcon />
+                <span>{isConnecting ? 'Connecting...' : 'Sign in with Google'}</span>
+              </button>
+              {isEmbeddedInIframe() && (
+                <a
+                  href={typeof window !== 'undefined' ? window.location.href : '/'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-[#EBF3FF] hover:bg-[#DCE9FF] text-[#3157A4] border border-[#B8D0F5] text-xs font-semibold transition-colors"
+                >
+                  <ExternalLink size={13} />
+                  <span>Open in New Tab</span>
+                </a>
+              )}
             </div>
+            {isEmbeddedInIframe() && (
+              <p className="text-[11px] text-[#475467] leading-relaxed">
+                Note: Chrome blocks cross-site OAuth popups inside embedded preview frames. If the popup closes or stays blank here, click <strong>Open in New Tab</strong> to authorize Google Meet in a standalone browser tab.
+              </p>
+            )}
           </div>
         )}
       </div>

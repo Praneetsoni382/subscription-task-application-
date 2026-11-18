@@ -375,9 +375,17 @@ async function getWorkspaceGoogleAccessToken(workspaceId: string): Promise<strin
 }
 
 async function callGoogleMeetCreateSpaceApi(
-  workspaceId: string
-): Promise<{ googleSpaceName: string; meetingUri: string; meetingCode: string }> {
-  let token = await getWorkspaceGoogleAccessToken(workspaceId);
+  workspaceId: string,
+  delegatedAccessToken?: string
+): Promise<{
+  googleSpaceName: string;
+  meetingUri: string;
+  meetingCode: string;
+}> {
+  const usingDelegated = Boolean(delegatedAccessToken && delegatedAccessToken.trim().length > 0);
+  let token = usingDelegated
+    ? delegatedAccessToken!.trim()
+    : await getWorkspaceGoogleAccessToken(workspaceId);
 
   const invoke = async (accessToken: string) =>
     fetch('https://meet.googleapis.com/v2/spaces', {
@@ -395,6 +403,13 @@ async function callGoogleMeetCreateSpaceApi(
 
   let res = await invoke(token);
   if (res.status === 401) {
+    if (usingDelegated) {
+      throw new HttpError(
+        401,
+        'Your Google Meet authorization has expired. Please reconnect with Google to create a meeting link.',
+        'GOOGLE_OAUTH_NOT_CONNECTED'
+      );
+    }
     token = await refreshWorkspaceAccessToken(workspaceId);
     res = await invoke(token);
   }
@@ -442,6 +457,7 @@ export interface GenerateMeetInput {
   scheduledAt?: string | null;
   status?: 'draft' | 'scheduled';
   idempotencyKey?: string;
+  googleAccessToken?: string;
 }
 
 /**
@@ -464,8 +480,11 @@ export async function generateMeetForWorkspace(input: GenerateMeetInput): Promis
     throw new HttpError(402, 'No active Premium billing period found for Workspace.', 'PREMIUM_REQUIRED');
   }
 
-  // Verify Google OAuth connection exists BEFORE reserving credit
-  await getWorkspaceGoogleAccessToken(workspaceId);
+  // Verify either a delegated Google Meet access token or stored Workspace OAuth token exists BEFORE reserving credit
+  const delegatedToken = input.googleAccessToken?.trim() || undefined;
+  if (!delegatedToken) {
+    await getWorkspaceGoogleAccessToken(workspaceId);
+  }
 
   const opId = newId();
   const idempotencyKey = input.idempotencyKey || opId;
@@ -555,7 +574,7 @@ export async function generateMeetForWorkspace(input: GenerateMeetInput): Promis
   // 3. Call official Google Meet REST API v2 outside transaction
   let spaceResult: { googleSpaceName: string; meetingUri: string; meetingCode: string };
   try {
-    spaceResult = await callGoogleMeetCreateSpaceApi(workspaceId);
+    spaceResult = await callGoogleMeetCreateSpaceApi(workspaceId, delegatedToken);
   } catch (apiErr) {
     // 4a. Permanent provider failure -> release reserved credit atomically
     const failIso = new Date().toISOString();

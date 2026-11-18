@@ -86,8 +86,9 @@ export async function createOrValidateSingleDeviceSession(params: {
   workspaceId: string;
   requestedSessionId?: string;
   deviceLabel?: string;
+  forceTakeover?: boolean;
 }): Promise<ActiveSession> {
-  const { uid, workspaceId, requestedSessionId, deviceLabel } = params;
+  const { uid, workspaceId, requestedSessionId, deviceLabel, forceTakeover } = params;
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
   const expiresAtIso = new Date(nowMs + SESSION_INACTIVITY_TIMEOUT_MS).toISOString();
@@ -115,11 +116,13 @@ export async function createOrValidateSingleDeviceSession(params: {
           return refreshed;
         }
 
-        throw new HttpError(
-          409,
-          `Account is already signed in on another active device (${existing.deviceLabel || 'another browser'}). Sign out from the active device or wait for the session inactivity timeout before signing in here.`,
-          'ACTIVE_SESSION_CONFLICT'
-        );
+        if (!forceTakeover) {
+          throw new HttpError(
+            409,
+            `Account is already signed in on another active device (${existing.deviceLabel || 'another browser'}). You can sign out the previous session and continue here.`,
+            'ACTIVE_SESSION_CONFLICT'
+          );
+        }
       }
     }
 

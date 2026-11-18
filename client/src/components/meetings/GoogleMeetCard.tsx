@@ -21,6 +21,7 @@ import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
 import { useAuth } from '../../contexts/AuthContext';
 import { meetingApi } from '../../services/api';
+import { authorizeGoogleMeetPopup, clearMeetAccessToken } from '../../services/googleMeet';
 import type { Meeting, StatusRequest } from '../../types';
 
 interface Props {
@@ -59,14 +60,29 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
     refetchInterval: isPremiumActive ? 8000 : false,
   });
 
-  // Create Genuine Meet Link strictly on backend via Google Meet REST API v2 + Credit Reservation
+  // Create Genuine Meet Link on backend via Google Meet REST API v2 + Credit Reservation
   const handleCreateRealMeetLink = async () => {
     setCreationError('');
     setCreationErrorCode('');
     setIsCreatingMeet(true);
     try {
       const idempotencyKey = `sr_${statusRequest.id}`;
-      await meetingApi.createMeeting(statusRequest.id, { idempotencyKey });
+      try {
+        await meetingApi.createMeeting(statusRequest.id, { idempotencyKey });
+      } catch (firstErr: any) {
+        const firstCode = firstErr?.response?.data?.code || '';
+        if (
+          firstCode === 'GOOGLE_OAUTH_NOT_CONNECTED' ||
+          firstCode === 'GOOGLE_TOKEN_REFRESH_FAILED' ||
+          firstCode === 'GOOGLE_OAUTH_RECONNECT_REQUIRED'
+        ) {
+          clearMeetAccessToken();
+          await authorizeGoogleMeetPopup();
+          await meetingApi.createMeeting(statusRequest.id, { idempotencyKey });
+        } else {
+          throw firstErr;
+        }
+      }
 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['status-request-meeting', statusRequest.id] }),
@@ -84,7 +100,7 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
       if (code === 'GOOGLE_OAUTH_NOT_CONNECTED' || code === 'GOOGLE_TOKEN_REFRESH_FAILED') {
         setCreationError(
           msg ||
-            'Workspace Google Meet connection required. Please authorize Google Workspace OAuth in Google Settings.'
+            'Google Meet permission is required. Please sign in with Google in Google Settings.'
         );
         if (onOpenGoogleConnect) {
           onOpenGoogleConnect();

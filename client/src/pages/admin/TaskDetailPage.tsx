@@ -28,6 +28,7 @@ import { PageLoader } from '../../components/ui/LoadingSpinner';
 import { useAuth } from '../../contexts/AuthContext';
 import { taskApi, statusRequestApi, queryApi, chatApi, reminderApi } from '../../services/api';
 import { GoogleMeetCard } from '../../components/meetings/GoogleMeetCard';
+import { authorizeGoogleMeetPopup, getCachedMeetAccessToken } from '../../services/googleMeet';
 import { formatDate, formatDateTime, formatRelative, isOverdue } from '../../utils/formatDate';
 import {
   getStatusColors,
@@ -242,13 +243,24 @@ export function TaskDetailPage() {
     setStatusReqModalOpen(true);
   };
 
-  const handleSendStatusRequest = () => {
+  const handleSendStatusRequest = async () => {
     setMeetModalError('');
     const q = customQuestion.trim() ? customQuestion.trim() : selectedQuestion;
 
     if (includeMeet && (!meetDate || !meetTime)) {
       setMeetModalError('Please choose both Meeting Date (IST) and Meeting Start Time (IST).');
       return;
+    }
+
+    if (includeMeet && !getCachedMeetAccessToken()) {
+      try {
+        await authorizeGoogleMeetPopup();
+      } catch (err: any) {
+        setMeetModalError(
+          err?.message || 'Google Meet permission is required to include a Google Meet link.'
+        );
+        return;
+      }
     }
 
     sendStatusReqMutation.mutate({

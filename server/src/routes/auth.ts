@@ -27,6 +27,7 @@ const loginSchema = z
     password: z.string().min(1, 'Password is required').optional(),
     firebaseIdToken: z.string().min(1).optional(),
     sessionId: z.string().optional(),
+    forceTakeover: z.boolean().optional(),
   })
   .refine(
     (d) => Boolean(d.firebaseIdToken) || Boolean(d.email && d.password),
@@ -43,7 +44,7 @@ router.post(
       return;
     }
 
-    const { email, password, firebaseIdToken, sessionId } = parse.data;
+    const { email, password, firebaseIdToken, sessionId, forceTakeover } = parse.data;
     let user = null;
 
     if (firebaseIdToken) {
@@ -105,12 +106,13 @@ router.post(
       req.headers['user-agent']
     );
 
-    // Enforce one active session per user via Firestore transaction (throws 409 on conflict)
+    // Enforce one active session per user via Firestore transaction (throws 409 on conflict unless forceTakeover)
     const activeSession = await createOrValidateSingleDeviceSession({
       uid: user.id,
       workspaceId: user.workspaceId,
       requestedSessionId: sessionId || headerSessionId,
       deviceLabel,
+      forceTakeover: Boolean(forceTakeover),
     });
 
     await userRepo.update(user.id, { lastLoginAt: new Date().toISOString() });
