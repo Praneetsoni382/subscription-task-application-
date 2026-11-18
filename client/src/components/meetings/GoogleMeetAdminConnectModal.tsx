@@ -82,6 +82,9 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
       return res.data?.data as {
         isConnected: boolean;
         connectedEmail?: string | null;
+        hasClientId?: boolean;
+        hasClientSecret?: boolean;
+        isEncryptionConfigured?: boolean;
         hasOAuthConfig?: boolean;
         hasEncryptionKey?: boolean;
       };
@@ -118,7 +121,11 @@ export function GoogleMeetAdminConnectModal({ isOpen, onClose }: Props) {
       // On Render production (when server-side OAuth credentials + encryption key are configured),
       // use the full-page OAuth redirect flow so refresh tokens are encrypted in Firestore and
       // browser popup/third-party cookie restrictions are avoided completely.
-      if (statusData?.hasOAuthConfig && statusData?.hasEncryptionKey) {
+      const hasServerOAuth = Boolean(
+        (statusData?.hasOAuthConfig || (statusData?.hasClientId && statusData?.hasClientSecret)) &&
+          (statusData?.hasEncryptionKey || statusData?.isEncryptionConfigured)
+      );
+      if (hasServerOAuth) {
         await startWorkspaceGoogleOAuth();
         return;
       }

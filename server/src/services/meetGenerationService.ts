@@ -746,14 +746,19 @@ export async function generateMeetForWorkspace(input: GenerateMeetInput): Promis
 
 export async function getWorkspaceGoogleStatus(workspaceId: string) {
   const stored = await googleAuthRepo.getTokensByWorkspace(workspaceId);
+  const hasClientId = Boolean(getEffectiveGoogleClientId());
+  const hasClientSecret = Boolean(GOOGLE_CLIENT_SECRET);
+  const isEncryptionConfigured = Boolean(
+    OAUTH_TOKEN_ENCRYPTION_KEY && OAUTH_TOKEN_ENCRYPTION_KEY.trim().length >= 16
+  );
   return {
     isConnected: Boolean(stored && stored.encryptedAccessToken),
     connectedEmail: stored?.email || null,
-    hasClientId: Boolean(getEffectiveGoogleClientId()),
-    hasClientSecret: Boolean(GOOGLE_CLIENT_SECRET),
-    isEncryptionConfigured: Boolean(
-      OAUTH_TOKEN_ENCRYPTION_KEY && OAUTH_TOKEN_ENCRYPTION_KEY.trim().length >= 16
-    ),
+    hasClientId,
+    hasClientSecret,
+    isEncryptionConfigured,
+    hasOAuthConfig: hasClientId && hasClientSecret,
+    hasEncryptionKey: isEncryptionConfigured,
     updatedAt: stored?.updatedAt || null,
   };
 }
