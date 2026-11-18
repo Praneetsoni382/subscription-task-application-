@@ -21,7 +21,11 @@ import { Textarea } from '../ui/Textarea';
 import { Input } from '../ui/Input';
 import { useAuth } from '../../contexts/AuthContext';
 import { meetingApi } from '../../services/api';
-import { authorizeGoogleMeetPopup, clearMeetAccessToken } from '../../services/googleMeet';
+import {
+  authorizeGoogleMeetPopup,
+  clearMeetAccessToken,
+  startWorkspaceGoogleOAuth,
+} from '../../services/googleMeet';
 import type { Meeting, StatusRequest } from '../../types';
 
 interface Props {
@@ -77,6 +81,28 @@ export function GoogleMeetCard({ statusRequest, isAdmin, onOpenGoogleConnect }: 
           firstCode === 'GOOGLE_OAUTH_RECONNECT_REQUIRED'
         ) {
           clearMeetAccessToken();
+          const statusRes = await meetingApi.getGoogleStatus().catch(() => null);
+          const status = statusRes?.data?.data as
+            | {
+                hasClientId?: boolean;
+                hasClientSecret?: boolean;
+                isEncryptionConfigured?: boolean;
+                hasOAuthConfig?: boolean;
+                hasEncryptionKey?: boolean;
+              }
+            | undefined;
+          const hasServerOAuth = Boolean(
+            (status?.hasOAuthConfig || (status?.hasClientId && status?.hasClientSecret)) &&
+              (status?.hasEncryptionKey || status?.isEncryptionConfigured)
+          );
+          if (hasServerOAuth) {
+            if (onOpenGoogleConnect) {
+              onOpenGoogleConnect();
+            } else {
+              await startWorkspaceGoogleOAuth();
+            }
+            return;
+          }
           await authorizeGoogleMeetPopup();
           await meetingApi.createMeeting(statusRequest.id, { idempotencyKey });
         } else {

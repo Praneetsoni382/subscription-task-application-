@@ -26,9 +26,13 @@ import { Modal } from '../../components/ui/Modal';
 import { Textarea } from '../../components/ui/Textarea';
 import { PageLoader } from '../../components/ui/LoadingSpinner';
 import { useAuth } from '../../contexts/AuthContext';
-import { taskApi, statusRequestApi, queryApi, chatApi, reminderApi } from '../../services/api';
+import { taskApi, statusRequestApi, queryApi, chatApi, reminderApi, meetingApi } from '../../services/api';
 import { GoogleMeetCard } from '../../components/meetings/GoogleMeetCard';
-import { authorizeGoogleMeetPopup, getCachedMeetAccessToken } from '../../services/googleMeet';
+import {
+  authorizeGoogleMeetPopup,
+  getCachedMeetAccessToken,
+  startWorkspaceGoogleOAuth,
+} from '../../services/googleMeet';
 import { formatDate, formatDateTime, formatRelative, isOverdue } from '../../utils/formatDate';
 import {
   getStatusColors,
@@ -254,10 +258,36 @@ export function TaskDetailPage() {
 
     if (includeMeet && !getCachedMeetAccessToken()) {
       try {
-        await authorizeGoogleMeetPopup();
+        const statusRes = await meetingApi.getGoogleStatus();
+        const status = statusRes.data?.data as
+          | {
+              isConnected?: boolean;
+              hasClientId?: boolean;
+              hasClientSecret?: boolean;
+              isEncryptionConfigured?: boolean;
+              hasOAuthConfig?: boolean;
+              hasEncryptionKey?: boolean;
+            }
+          | undefined;
+
+        const isBackendConnected = Boolean(status?.isConnected);
+        const hasServerOAuth = Boolean(
+          (status?.hasOAuthConfig || (status?.hasClientId && status?.hasClientSecret)) &&
+            (status?.hasEncryptionKey || status?.isEncryptionConfigured)
+        );
+
+        if (!isBackendConnected) {
+          if (hasServerOAuth) {
+            await startWorkspaceGoogleOAuth();
+            return;
+          }
+          await authorizeGoogleMeetPopup();
+        }
       } catch (err: any) {
         setMeetModalError(
-          err?.message || 'Google Meet permission is required to include a Google Meet link.'
+          err?.response?.data?.error ||
+            err?.message ||
+            'Google Meet permission is required to include a Google Meet link.'
         );
         return;
       }
